@@ -1141,51 +1141,36 @@ class TelegramBot:
             )
 
 
-def main():
-    """মেইন ফাংশন"""
+async def main():
+    """মেইন ফাংশন - Async ভার্সন"""
     print("="*60)
     print("📊 স্টক অ্যানালাইসিস বট - প্রফেশনাল ভার্সন (Google GenAI SDK)")
     print("🤖 Elliot Wave + Chart Patterns + Price Action + Risk/Reward")
     print("="*60)
-    
+
     token = os.getenv('TELEGRAM_BOT_TOKEN', '')
     if not token:
         print("❌ TELEGRAM_BOT_TOKEN not found!")
         return
-    
-    # ফোর্স ওয়েবহুক ডিলিট
-    print("🔄 Force deleting webhook...")
-    for attempt in range(5):
-        try:
-            url = f"https://api.telegram.org/bot{token}/deleteWebhook?drop_pending_updates=true"
-            response = requests.get(url, timeout=10)
-            print(f"✅ Attempt {attempt + 1}: {response.json()}")
-        except Exception as e:
-            print(f"⚠️ Attempt {attempt + 1} failed: {e}")
-        time.sleep(2)
-    
-    print("⏳ Waiting 30 seconds for Telegram API to fully reset...")
-    time.sleep(30)
-    
-    # ওয়েবহুক স্ট্যাটাস চেক
+
+    # ওয়েবহুক ডিলিট (সিঙ্ক্রোনাস)
+    print("🔄 Deleting webhook...")
     try:
-        url = f"https://api.telegram.org/bot{token}/getWebhookInfo"
+        url = f"https://api.telegram.org/bot{token}/deleteWebhook?drop_pending_updates=true"
         response = requests.get(url, timeout=10)
-        info = response.json()
-        print(f"📡 Webhook info: {info}")
-        if info.get('result', {}).get('url'):
-            print("⚠️ Webhook still exists! Force deleting again...")
-            requests.get(f"https://api.telegram.org/bot{token}/deleteWebhook?drop_pending_updates=true")
-            time.sleep(10)
+        print(f"✅ Webhook deleted: {response.json()}")
     except Exception as e:
-        print(f"⚠️ Could not get webhook info: {e}")
-    
+        print(f"⚠️ Could not delete webhook: {e}")
+
     # বট ইনিশিয়ালাইজ
     print("🔧 Initializing TelegramBot...")
-    global telegram_bot
     telegram_bot = TelegramBot()
     telegram_bot.setup()
     
+    if not telegram_bot.app:
+        print("❌ Failed to initialize bot")
+        return
+
     print("🚀 Starting bot in polling mode...")
     print("📊 Features:")
     print("   ✅ Elliot Wave (1,2,3,4,5,ABC)")
@@ -1197,20 +1182,35 @@ def main():
     print("   ✅ Google GenAI SDK (google-genai)")
     print("⏳ Rate Limit: 15 requests per minute")
     print("✅ Bot started. Waiting for messages...")
-    
-    time.sleep(5)
-    
-    # পোলিং শুরু
-    print("🔄 Starting polling...")
+
+    # Async পদ্ধতিতে বট চালান
     try:
-        telegram_bot.run_polling()
-        print("✅ Polling started successfully")
-    except Exception as e:
-        print(f"❌ Polling error: {e}")
-        traceback.print_exc()
+        await telegram_bot.app.initialize()
+        await telegram_bot.app.start()
+        
+        # Updater দিয়ে polling শুরু
+        await telegram_bot.app.updater.start_polling(
+            allowed_updates=Update.ALL_TYPES,
+            drop_pending_updates=True,
+            poll_interval=1.0,
+            timeout=60
+        )
+        
+        print("🔄 Bot is running. Press Ctrl+C to stop.")
+        
+        # Keep the bot running
         while True:
-            print("🔄 Bot is running but polling failed...")
-            time.sleep(60)
+            await asyncio.sleep(1)
+            
+    except asyncio.CancelledError:
+        print("\n🛑 Bot cancelled")
+    except Exception as e:
+        print(f"❌ Bot error: {e}")
+        traceback.print_exc()
+    finally:
+        if telegram_bot.app:
+            await telegram_bot.app.updater.stop()
+            await telegram_bot.app.stop()
 
 
 if __name__ == "__main__":
@@ -1219,7 +1219,14 @@ if __name__ == "__main__":
     flask_thread.start()
     print(f"✅ Flask server starting on port {os.environ.get('PORT', 10000)}")
     
-    time.sleep(2)
+    # Flask সার্ভার শুরু হতে সময় দিন
+    time.sleep(3)
     
-    # বট চালান
-    main()
+    # Async main ফাংশন চালান
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\n🛑 Bot stopped by user")
+    except Exception as e:
+        print(f"❌ Fatal error: {e}")
+        traceback.print_exc()
