@@ -11,4 +11,3 @@ google-genai
 numpy
 scipy>=1.10.0
 asyncio>=3.4.3
-google
