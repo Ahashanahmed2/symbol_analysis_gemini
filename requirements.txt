@@ -1,18 +1,10 @@
-# কোর প্যাকেজ
-python-telegram-bot==21.0.1
+python-telegram-bot==20.7
 pandas==2.3.3
 python-dotenv==1.0.0
 huggingface-hub==0.20.3
-
-# ওয়েব ফ্রেমওয়ার্ক
 flask==2.3.3
 requests==2.31.0
-
-# AI/ML প্যাকেজ
 google-genai>=0.2.0
-
-# ডাটা সায়েন্স প্যাকেজ
 numpy==1.26.3
 scipy==1.11.4
-
-# বাকি প্যাকেজ (asyncio পাইথন বিল্ট-ইন, আলাদা লাগে না)
+gunicorn==21.2.0
