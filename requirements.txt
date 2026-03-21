@@ -9,5 +9,5 @@ groq
 flask==2.3.3
 google-genai 
 numpy
-asyncio
-scipy
+scipy>=1.10.0
+asyncio>=3.4.3
