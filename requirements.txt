@@ -10,3 +10,4 @@ flask==2.3.3
 google-genai 
 numpy
 asyncio
+scipy
