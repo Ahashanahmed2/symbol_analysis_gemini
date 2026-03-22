@@ -133,6 +133,7 @@ class StockDataFetcher:
                 
                 self.df_cache = pd.read_csv(path, encoding='utf-8-sig')
                 logger.info(f"মোট {len(self.df_cache)}টি রো লোড করা হয়েছে")
+                logger.info(f"কলাম সমূহ: {list(self.df_cache.columns)}")
                 
                 symbol_col = self._find_symbol_column(self.df_cache)
                 if symbol_col:
@@ -229,7 +230,10 @@ class StockDataFetcher:
         # সম্পূর্ণ ডাটা টেক্সট ফরম্যাটে কনভার্ট করুন
         df_clean = df.copy()
         df_clean = df_clean.fillna('')
+        
+        # গুরুত্বপূর্ণ: ডাটা স্ট্রিং তৈরি করুন
         data_string = df_clean.to_string()
+        logger.info(f"ডাটা স্ট্রিং তৈরি করা হয়েছে: {len(data_string)} অক্ষর")
         
         columns_list = list(df.columns)
         
@@ -248,7 +252,7 @@ class StockDataFetcher:
             end_date = df[date_col].max()
             time_period = f"📅 সময়কাল: {start_date} থেকে {end_date}"
         
-        # সম্পূর্ণ ফাইল কন্টেন্ট তৈরি করুন
+        # সম্পূর্ণ ফাইল কন্টেন্ট তৈরি করুন - ডাটা সঠিকভাবে যুক্ত হয়েছে তা নিশ্চিত করুন
         file_content = f"""🤖 **ভূমিকা:** আপনি একজন বিশ্বসেরা প্রফেশনাল টেকনিক্যাল অ্যানালিস্ট, চার্ট রিডার এবং ট্রেডার। আপনার কাজ হলো প্রদত্ত OHLCV ডাটা, প্রাইস মুভমেন্ট এবং মার্কেট স্ট্রাকচার বিশ্লেষণ করে একটি পূর্ণাঙ্গ, প্রমাণভিত্তিক এবং অ্যাকশনেবল টেকনিক্যাল রিপোর্ট তৈরি করা। আপনার প্রতিটি মন্তব্য যুক্তিসঙ্গত, ডাটা-ড্রিভেন এবং প্যাটার্ন-ভিত্তিক হতে হবে।
 
 ⚠️ **গুরুত্বপূর্ণ নির্দেশনা:** আপনার সম্পূর্ণ উত্তর **বাংলা ভাষায়** দিন। ইমোজি ব্যবহার করুন। মার্কডাউন ফরম্যাটে উত্তর দিন।
@@ -264,6 +268,11 @@ class StockDataFetcher:
 • **কলাম সমূহ:** {', '.join(columns_list[:15])}{'...' if len(columns_list) > 15 else ''}
 
 📋 **সম্পূর্ণ ডাটা (সব কলাম সহ):**
+"""
+
+data_string
+
+"""
 
 
 ═══════════════════════════════════════════════════════════
@@ -502,6 +511,7 @@ class StockDataFetcher:
 """
         
         logger.info(f"ফাইল তৈরি করা হয়েছে: {len(data_string)} অক্ষরের ডাটা সহ")
+        logger.info(f"ফাইলের প্রথম 500 অক্ষর: {file_content[:500]}")
         
         return file_content
 
@@ -521,8 +531,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 🤖 আমি একটি **প্রফেশনাল স্টক টেকনিক্যাল অ্যানালাইসিস বট**।
 
 **কিভাবে ব্যবহার করবেন:**
-1. 📈 যেকোনো স্টক সিম্বল পাঠান (যেমন: GP, ACI, SQUARE)
-2. 📊 আমি হাগিং ফেস থেকে সম্পূর্ণ ডাটা আনব
+1. 📈 যেকোনো স্টক সিম্বল পাঠান (যেমন: GP, ACI, SQUARE, RUPALILIFE)
+2. 📊 আমি হাগিং ফেস থেকে সম্পূর্ণ ডাটা আনব (সব কলাম সহ)
 3. 📝 সম্পূর্ণ প্রফেশনাল অ্যানালাইসিস প্রম্পট তৈরি করব
 4. 📥 ফাইল ডাউনলোড লিংক পাবেন
 5. 🤖 AI টুলে ফাইল আপলোড করে বিশ্লেষণ করান
@@ -568,7 +578,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 **কিভাবে ব্যবহার করবেন:**
 
 ১️⃣ **স্টক সিম্বল পাঠান**
-যেমন: GP, ACI, SQUARE, BRACBANK
+যেমন: GP, ACI, SQUARE, BRACBANK, RUPALILIFE
 (সম্পূর্ণ লিস্ট দেখতে /symbols)
 
 ২️⃣ **ফাইল ডাউনলোড করুন**
@@ -862,3 +872,4 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         logger.info("🛑 বট বন্ধ করা হয়েছে")
+
