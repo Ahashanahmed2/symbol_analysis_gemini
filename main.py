@@ -308,7 +308,7 @@ async def test_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             test_response = await asyncio.get_event_loop().run_in_executor(
                 None,
                 lambda: analyzer.gemini_client.models.generate_content(
-                    model="gemini-2.0-flash-exp",
+                    model="gemini-1.5-pro",
                     contents="Say 'API working'",
                     config=types.GenerateContentConfig(max_output_tokens=10)
                 )
