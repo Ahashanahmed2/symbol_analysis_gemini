@@ -11,7 +11,6 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from huggingface_hub import hf_hub_download, HfApi
 import io
-import json
 
 # ================================
 # এনভায়রনমেন্ট + লগিং
@@ -87,6 +86,11 @@ class StockDataFetcher:
         try:
             logger.info(f"{symbol} এর জন্য ডাটা সংগ্রহ করা হচ্ছে...")
 
+            # চেক করুন HF_TOKEN আছে কিনা
+            if not self.hf_token:
+                logger.error("HF_TOKEN সেট করা নেই!")
+                return None, 0
+
             # ডাটাসেটের ফাইল লিস্ট করুন
             files = self.hf_api.list_repo_files(
                 repo_id=self.repo_id, 
@@ -95,10 +99,17 @@ class StockDataFetcher:
             )
 
             # সিএসভি ফাইল খুঁজুন
-            csv_file = next((f for f in files if f.endswith(".csv")), None)
+            csv_file = None
+            for f in files:
+                if f.endswith(".csv"):
+                    csv_file = f
+                    break
+            
             if not csv_file:
                 logger.error("কোন সিএসভি ফাইল পাওয়া যায়নি")
-                return None
+                return None, 0
+
+            logger.info(f"CSV ফাইল পাওয়া গেছে: {csv_file}")
 
             # ডাউনলোড করুন এবং পড়ুন
             with tempfile.TemporaryDirectory() as temp:
@@ -110,14 +121,25 @@ class StockDataFetcher:
                     local_dir=temp
                 )
 
+                logger.info(f"ফাইল ডাউনলোড করা হয়েছে: {path}")
+
                 # বিভিন্ন এনকোডিং চেষ্টা করুন
-                try:
-                    df = pd.read_csv(path, encoding='utf-8')
-                except:
+                df = None
+                for encoding in ['utf-8', 'latin-1', 'utf-8-sig', 'cp1252']:
                     try:
-                        df = pd.read_csv(path, encoding='latin-1')
+                        df = pd.read_csv(path, encoding=encoding)
+                        logger.info(f"সফলভাবে পড়া হয়েছে {encoding} এনকোডিং ব্যবহার করে")
+                        break
                     except:
-                        df = pd.read_csv(path, encoding='utf-8-sig')
+                        continue
+                
+                if df is None:
+                    logger.error("কোন এনকোডিং দিয়ে ফাইল পড়া যায়নি")
+                    return None, 0
+
+                logger.info(f"মোট কলাম: {len(df.columns)}")
+                logger.info(f"মোট রো: {len(df)}")
+                logger.info(f"কলামের নাম: {list(df.columns)}")
 
                 # সিম্বল কলাম খুঁজুন
                 symbol_col = None
@@ -143,16 +165,17 @@ class StockDataFetcher:
                     filtered_df = df[df[symbol_col].str.contains(symbol.upper(), na=False)]
                     if filtered_df.empty:
                         logger.warning(f"{symbol} এর জন্য কোন ডাটা পাওয়া যায়নি")
-                        return None
+                        return None, 0
 
                 # সর্বশেষ rows টি নিন (যতটুকু আছে)
                 rows_available = len(filtered_df)
                 rows_to_take = min(rows, rows_available)
                 
                 logger.info(f"{symbol} এর জন্য {rows_available}টি রো পাওয়া গেছে, {rows_to_take}টি নেওয়া হচ্ছে")
-                logger.info(f"কলাম সমূহ: {list(filtered_df.columns)}")
                 
-                return filtered_df.tail(rows_to_take), rows_available
+                result_df = filtered_df.tail(rows_to_take)
+                
+                return result_df, rows_available
 
         except Exception as e:
             logger.error(f"ডাটা ফেচিং এ সমস্যা: {traceback.format_exc()}")
@@ -171,7 +194,7 @@ class StockDataFetcher:
         # কলামের নাম লিস্ট
         columns_list = list(df.columns)
         
-        # সম্পূর্ণ প্রম্পট তৈরি করুন (আপনার দেওয়া সম্পূর্ণ টেক্সট)
+        # সম্পূর্ণ প্রম্পট তৈরি করুন
         prompt = f"""🤖 ভূমিকা: আপনি একজন বিশ্বসেরা প্রফেশনাল টেকনিক্যাল অ্যানালিস্ট, চার্ট রিডার এবং ট্রেডার। আপনার কাজ হলো প্রদত্ত OHLCV ডাটা, প্রাইস মুভমেন্ট এবং মার্কেট স্ট্রাকচার বিশ্লেষণ করে একটি পূর্ণাঙ্গ, প্রমাণভিত্তিক এবং অ্যাকশনেবল টেকনিক্যাল রিপোর্ট তৈরি করা। আপনার প্রতিটি মন্তব্য যুক্তিসঙ্গত, ডাটা-ড্রিভেন এবং প্যাটার্ন-ভিত্তিক হতে হবে।
 
 📊 ইনপুট ডাটা:
@@ -719,19 +742,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 4. 📥 ফাইল ডাউনলোড করুন
 5. 🤖 যেকোনো AI টুলে আপলোড করে বিশ্লেষণ করান
 
-**ফাইলে যা থাকছে:**
-✅ সম্পূর্ণ ডাটা (সব কলাম সহ) - সর্বশেষ ৪০০টি রো
-✅ সম্পূর্ণ এলিয়ট ওয়েভ লাইব্রেরি
-✅ সম্পূর্ণ SMC লাইব্রেরি
-✅ সম্পূর্ণ প্রাইস অ্যাকশন লাইব্রেরি
-✅ সম্পূর্ণ চার্ট প্যাটার্ন লাইব্রেরি
-✅ ফিবোনাচ্চি অ্যানালাইসিস
-✅ ট্রেডিং প্ল্যান টেমপ্লেট
-✅ রিস্ক ম্যানেজমেন্ট ফ্রেমওয়ার্ক
-
 **বিশেষ নোট:**
-🔴 বট কোনো ক্যালকুলেশন করবে না
-🔴 শুধু ডাটা + প্রম্পট একসাথে দেবে
+🔴 বট কোনো ক্যালকুলেশন করে না
+🔴 শুধু ডাটা + প্রম্পট একসাথে দেয়
 🔴 আপনি ফাইলটি AI-তে আপলোড করে বিশ্লেষণ করাবেন
 
 **কমান্ডসমূহ:**
@@ -761,26 +774,19 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 • Groq (groq.com)
 • ChatGPT (chat.openai.com)
 • Claude (claude.ai)
-• অথবা যেকোনো AI টুল
 
 ৪️⃣ **বিশ্লেষণ করতে বলুন**
 AI কে বলুন: "এই ডাটা এবং প্রম্পট অনুযায়ী সম্পূর্ণ টেকনিক্যাল অ্যানালাইসিস করুন"
 
-**ফাইলের বিশেষত্ব:**
-📊 সম্পূর্ণ ডাটা (সব কলাম সহ) - বট কোনো পরিবর্তন করে না
-🤖 প্রফেশনাল টেকনিক্যাল অ্যানালিস্ট ভূমিকা
-🌊 সম্পূর্ণ এলিয়ট ওয়েভ লাইব্রেরি (মোটিভ + কারেক্টিভ)
-💰 সম্পূর্ণ SMC লাইব্রেরি (অর্ডার ব্লক, FVG, লিকুইডিটি)
-🕯️ সম্পূর্ণ ক্যান্ডেলস্টিক প্যাটার্ন লাইব্রেরি
-📐 সম্পূর্ণ চার্ট প্যাটার্ন লাইব্রেরি
-📏 ফিবোনাচ্চি লেভেলস
-🎯 ট্রেডিং প্ল্যান টেমপ্লেট
-⚠️ রিস্ক ম্যানেজমেন্ট ফ্রেমওয়ার্ক
-
-**ক্যালকুলেশন:**
-❌ বট কোনো ক্যালকুলেশন করে না
-❌ কোনো মান বের করে না
-✅ শুধু ডাটা + প্রম্পট একসাথে করে
+**ফাইলে যা থাকছে:**
+✅ সম্পূর্ণ ডাটা (সব কলাম সহ)
+✅ এলিয়ট ওয়েভ সম্পূর্ণ লাইব্রেরি
+✅ SMC সম্পূর্ণ লাইব্রেরি
+✅ প্রাইস অ্যাকশন সম্পূর্ণ লাইব্রেরি
+✅ চার্ট প্যাটার্ন সম্পূর্ণ লাইব্রেরি
+✅ ফিবোনাচ্চি অ্যানালাইসিস
+✅ ট্রেডিং প্ল্যান টেমপ্লেট
+✅ রিস্ক ম্যানেজমেন্ট ফ্রেমওয়ার্ক
 
 **উপলব্ধ কমান্ড:**
 /start - বট চালু করুন
@@ -800,22 +806,12 @@ async def about_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 • 🌐 ফ্লাস্ক (ফাইল সার্ভিং)
 
 **বিশেষ ফিচারসমূহ:**
-✅ **সম্পূর্ণ ডাটা** - সব কলাম সহ, কোনো পরিবর্তন নেই
-✅ **৪০০টি লেটেস্ট রো** (বা যতটুকু আছে)
-✅ **সম্পূর্ণ প্রম্পট** - আপনার দেওয়া সম্পূর্ণ টেক্সট
-✅ **কোনো ক্যালকুলেশন নেই** - শুধু ডাটা + প্রম্পট
-✅ **১ ক্লিকে ডাউনলোড**
-✅ **যেকোনো AI টুলে ব্যবহার উপযোগী**
-
-**ফাইলে যা থাকছে:**
-1. সম্পূর্ণ ডাটা (সব কলাম সহ)
-2. এলিয়ট ওয়েভ সম্পূর্ণ লাইব্রেরি
-3. SMC সম্পূর্ণ লাইব্রেরি
-4. ক্যান্ডেলস্টিক সম্পূর্ণ লাইব্রেরি
-5. চার্ট প্যাটার্ন সম্পূর্ণ লাইব্রেরি
-6. ফিবোনাচ্চি অ্যানালাইসিস
-7. ট্রেডিং প্ল্যান টেমপ্লেট
-8. রিস্ক ম্যানেজমেন্ট ফ্রেমওয়ার্ক
+✅ সম্পূর্ণ ডাটা (সব কলাম সহ)
+✅ ৪০০টি লেটেস্ট রো (বা যতটুকু আছে)
+✅ সম্পূর্ণ প্রম্পট (আপনার দেওয়া)
+✅ কোনো ক্যালকুলেশন নেই
+✅ ১ ক্লিকে ডাউনলোড
+✅ যেকোনো AI টুলে ব্যবহার উপযোগী
 
 **কিভাবে ব্যবহার করবেন:**
 1. ফাইল ডাউনলোড করুন
@@ -851,17 +847,11 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     try:
-        # স্টক ডাটা সংগ্রহ
-        await msg.edit_text(
-            f"📊 **{symbol}**\n\n"
-            "✅ **ধাপ ১/২:** ডাটা সংগ্রহ সম্পূর্ণ!\n"
-            "📝 **ধাপ ২/২:** ফাইল তৈরি করা হচ্ছে...\n"
-            "⏳ অনুগ্রহ করে অপেক্ষা করুন..."
-        )
-
-        df, rows_available = await fetcher.get_stock_data(symbol, rows=400)
-
-        if df is None or df.empty:
+        # স্টক ডাটা সংগ্রহ - সঠিকভাবে আনপ্যাক করুন
+        result = await fetcher.get_stock_data(symbol, rows=400)
+        
+        # চেক করুন result সঠিকভাবে এসেছে কিনা
+        if result is None:
             await msg.edit_text(
                 f"❌ **{symbol}** সিম্বলের জন্য কোন ডাটা পাওয়া যায়নি!\n\n"
                 "💡 সঠিক স্টক সিম্বল ব্যবহার করুন:\n"
@@ -875,6 +865,35 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode='Markdown'
             )
             return
+        
+        # সঠিকভাবে আনপ্যাক করুন
+        if len(result) == 2:
+            df, rows_available = result
+        else:
+            logger.error(f"Unexpected result format: {result}")
+            await msg.edit_text(
+                f"❌ **{symbol}** ডাটা ফরম্যাট সঠিক নয়!\n\n"
+                "পরে আবার চেষ্টা করুন।",
+                parse_mode='Markdown'
+            )
+            return
+
+        if df is None or df.empty:
+            await msg.edit_text(
+                f"❌ **{symbol}** সিম্বলের জন্য কোন ডাটা পাওয়া যায়নি!\n\n"
+                "💡 সঠিক স্টক সিম্বল ব্যবহার করুন।",
+                parse_mode='Markdown'
+            )
+            return
+
+        await msg.edit_text(
+            f"📊 **{symbol}**\n\n"
+            "✅ **ধাপ ১/২:** ডাটা সংগ্রহ সম্পূর্ণ!\n"
+            f"📈 মোট রো: {rows_available}টি, ব্যবহৃত: {len(df)}টি\n"
+            "📝 **ধাপ ২/২:** ফাইল তৈরি করা হচ্ছে...\n"
+            "⏳ অনুগ্রহ করে অপেক্ষা করুন...",
+            parse_mode='Markdown'
+        )
 
         # সম্পূর্ণ ফাইল তৈরি (ডাটা + প্রম্পট)
         file_content = fetcher.create_full_file(symbol, df, rows_available)
@@ -934,29 +953,16 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
 ✅ রিস্ক ম্যানেজমেন্ট ফ্রেমওয়ার্ক
 
 💡 **কিভাবে ব্যবহার করবেন:**
-
-**পদ্ধতি ১ - AI টুলে ব্যবহার:**
 ১. ফাইলটি ডাউনলোড করুন
-২. আপনার পছন্দের AI টুলে আপলোড করুন:
-   • Gemini AI: gemini.google.com
-   • Groq: groq.com
-   • ChatGPT: chat.openai.com
-   • Claude: claude.ai
+২. আপনার পছন্দের AI টুলে আপলোড করুন (Gemini, Groq, ChatGPT, Claude)
 ৩. AI কে বলুন: "এই ডাটা এবং প্রম্পট অনুযায়ী সম্পূর্ণ টেকনিক্যাল অ্যানালাইসিস করুন"
-৪. AI আপনার জন্য বিস্তারিত বিশ্লেষণ করবে
-
-**পদ্ধতি ২ - সরাসরি ব্যবহার:**
-ফাইলটি খুলে নিজে এলিয়ট ওয়েভ, SMC, প্রাইস অ্যাকশন বিশ্লেষণ করুন
 
 ⚠️ **গুরুত্বপূর্ণ নোট:**
 • বট কোনো ক্যালকুলেশন করেনি
 • ডাটা যেমন ছিল তেমনই আছে
 • শুধু ডাটা + প্রম্পট একসাথে করা হয়েছে
-• বিশ্লেষণ সম্পূর্ণ AI-এর উপর নির্ভর করবে
 
 ⏰ **মেয়াদ:** এই লিঙ্ক ৩০ মিনিট পর্যন্ত সক্রিয় থাকবে।
-
-❓ কোনো সমস্যা হলে /help কমান্ড ব্যবহার করুন।
 """
         
         # ডাউনলোড লিঙ্ক পাঠান
@@ -968,7 +974,7 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # ৩০ মিনিট পর ফাইল ডিলিট করুন
         async def delete_file():
-            await asyncio.sleep(1800)  # ৩০ মিনিট
+            await asyncio.sleep(1800)
             if file_id in generated_files:
                 del generated_files[file_id]
                 logger.info(f"ফাইল ডিলিট করা হয়েছে: {filename}")
@@ -977,9 +983,10 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     except Exception as e:
         logger.error(f"ত্রুটি: {traceback.format_exc()}")
+        error_msg = str(e)
         await msg.edit_text(
             f"❌ **{symbol}** ফাইল তৈরি করতে সমস্যা হয়েছে!\n\n"
-            f"ত্রুটি: {str(e)[:200]}\n\n"
+            f"ত্রুটি: {error_msg[:200]}\n\n"
             "পরে আবার চেষ্টা করুন অথবা /help কমান্ড ব্যবহার করুন।"
         )
 
@@ -994,7 +1001,6 @@ def download_file(file_id):
     content = file_data['content']
     filename = file_data['filename']
     
-    # মেমরিতে ফাইল তৈরি
     file_stream = io.BytesIO(content.encode('utf-8'))
     file_stream.seek(0)
     
@@ -1026,11 +1032,9 @@ async def setup_webhook():
 async def main():
     logger.info("🚀 স্টক টেকনিক্যাল অ্যানালাইসিস বট চালু হচ্ছে...")
 
-    # ফ্লাস্ক শুরু করুন
     flask_thread = threading.Thread(target=run_flask, daemon=True)
     flask_thread.start()
 
-    # এপিআই কি চেক করুন
     if not TELEGRAM_BOT_TOKEN:
         logger.error("❌ TELEGRAM_BOT_TOKEN সেট করা নেই!")
     if not HF_TOKEN:
