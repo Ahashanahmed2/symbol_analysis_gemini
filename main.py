@@ -11,6 +11,7 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from huggingface_hub import hf_hub_download, HfApi
 import io
+import urllib.parse
 
 # ================================
 # এনভায়রনমেন্ট + লগিং
@@ -84,7 +85,6 @@ class StockDataFetcher:
         self.all_symbols = None
 
     def _find_symbol_column(self, df):
-        """ডাটাফ্রেমে সিম্বল কলাম খুঁজে বের করে"""
         possible_columns = ['symbol', 'Symbol', 'SYMBOL', 'ticker', 'Ticker', 
                            'stock', 'Stock', 'name', 'Name', 'code', 'Code',
                            'company', 'Company', 'scrip', 'Scrip']
@@ -102,7 +102,6 @@ class StockDataFetcher:
         return df.columns[0] if len(df.columns) > 0 else None
 
     def _find_date_column(self, df):
-        """ডাটাফ্রেমে ডেট কলাম খুঁজে বের করে"""
         possible_columns = ['date', 'Date', 'DATE', 'datetime', 'DateTime', 
                            'timestamp', 'Timestamp', 'time', 'Time']
         
@@ -117,7 +116,6 @@ class StockDataFetcher:
         return None
 
     async def get_all_symbols(self):
-        """ডাটাসেটের সব সিম্বল লিস্ট করুন"""
         if self.all_symbols is not None:
             return self.all_symbols
         
@@ -136,32 +134,24 @@ class StockDataFetcher:
                     local_dir_use_symlinks=False
                 )
                 
-                logger.info(f"ফাইল ডাউনলোড করা হয়েছে: {path}")
-                
                 df = pd.read_csv(path, nrows=50000, encoding='utf-8-sig')
-                logger.info(f"মোট কলাম: {len(df.columns)}")
-                logger.info(f"কলামের নাম: {list(df.columns)}")
                 
                 symbol_col = self._find_symbol_column(df)
                 if symbol_col:
-                    logger.info(f"সিম্বল কলাম: {symbol_col}")
                     symbols = df[symbol_col].astype(str).str.strip().str.upper().unique()
                     symbols = [s for s in symbols if s and s != 'nan' and len(s) > 0]
                     self.all_symbols = sorted(symbols)
                     logger.info(f"মোট {len(self.all_symbols)}টি সিম্বল পাওয়া গেছে")
-                    logger.info(f"প্রথম ২০টি সিম্বল: {self.all_symbols[:20]}")
                 else:
-                    logger.error("কোন সিম্বল কলাম পাওয়া যায়নি!")
                     self.all_symbols = []
                 
                 return self.all_symbols
                 
         except Exception as e:
-            logger.error(f"সিম্বল লিস্ট পেতে সমস্যা: {traceback.format_exc()}")
+            logger.error(f"সিম্বল লিস্ট পেতে সমস্যা: {e}")
             return []
 
     async def get_stock_data(self, symbol: str, rows=400):
-        """সিম্বল অনুযায়ী ডাটা গ্রুপ করে লেটেস্ট rows সংখ্যক ডাটা রিটার্ন করে"""
         try:
             logger.info(f"{symbol} এর জন্য ডাটা সংগ্রহ করা হচ্ছে...")
 
@@ -179,34 +169,19 @@ class StockDataFetcher:
                     local_dir_use_symlinks=False
                 )
 
-                logger.info(f"ফাইল ডাউনলোড করা হয়েছে: {path}")
-
                 try:
                     df = pd.read_csv(path, encoding='utf-8-sig')
-                    logger.info("সফলভাবে পড়া হয়েছে utf-8-sig এনকোডিং ব্যবহার করে")
                 except:
                     try:
                         df = pd.read_csv(path, encoding='utf-8')
-                        logger.info("সফলভাবে পড়া হয়েছে utf-8 এনকোডিং ব্যবহার করে")
                     except:
                         df = pd.read_csv(path, encoding='latin-1')
-                        logger.info("সফলভাবে পড়া হয়েছে latin-1 এনকোডিং ব্যবহার করে")
-                
-                logger.info(f"মোট কলাম: {len(df.columns)}")
-                logger.info(f"মোট রো: {len(df)}")
-                logger.info(f"কলামের নাম: {list(df.columns)}")
 
                 symbol_col = self._find_symbol_column(df)
                 if not symbol_col:
-                    logger.error("কোন সিম্বল কলাম পাওয়া যায়নি!")
                     return None, 0, []
-                
-                logger.info(f"সিম্বল কলাম: {symbol_col}")
 
                 df[symbol_col] = df[symbol_col].astype(str).str.strip().str.upper()
-                
-                sample_symbols = df[symbol_col].dropna().head(20).tolist()
-                logger.info(f"নমুনা সিম্বল: {sample_symbols}")
                 
                 filtered_df = df[df[symbol_col] == symbol.upper()]
                 
@@ -223,11 +198,9 @@ class StockDataFetcher:
                                 similar_symbols.append(s_str)
                         
                         similar_symbols = list(set(similar_symbols))[:15]
-                        logger.info(f"{symbol} এর জন্য সিমিলার সিম্বল: {similar_symbols}")
                         return None, 0, similar_symbols
 
                 total_rows_available = len(filtered_df)
-                logger.info(f"{symbol} এর জন্য মোট {total_rows_available}টি রো পাওয়া গেছে")
                 
                 date_col = self._find_date_column(filtered_df)
                 if date_col:
@@ -235,10 +208,8 @@ class StockDataFetcher:
                     filtered_df = filtered_df.sort_values(date_col, ascending=False)
                     latest_df = filtered_df.head(rows).copy()
                     latest_df = latest_df.sort_values(date_col, ascending=True)
-                    logger.info(f"সর্বশেষ {len(latest_df)}টি রো নেওয়া হয়েছে")
                 else:
                     latest_df = filtered_df.tail(rows).copy()
-                    logger.info(f"ডেট কলাম নেই, শেষের {len(latest_df)}টি রো নেওয়া হয়েছে")
                 
                 return latest_df, total_rows_available, similar_symbols
 
@@ -247,7 +218,6 @@ class StockDataFetcher:
             return None, 0, []
 
     def create_full_file(self, symbol: str, df: pd.DataFrame, rows_available: int):
-        """সম্পূর্ণ ডাটা + সম্পূর্ণ প্রম্পট একসাথে ফাইল তৈরি করুন"""
         if df is None or df.empty:
             return None
         
@@ -284,7 +254,7 @@ class StockDataFetcher:
 - কলাম সমূহ: {', '.join(columns_list[:15])}{'...' if len(columns_list) > 15 else ''}
 """
         
-        # সম্পূর্ণ প্রম্পট - কোনো কিছু বাদ দেওয়া হয়নি
+        # সম্পূর্ণ প্রম্পট (আগের মতোই)
         prompt = f"""🤖 ভূমিকা: আপনি একজন বিশ্বসেরা প্রফেশনাল টেকনিক্যাল অ্যানালিস্ট, চার্ট রিডার এবং ট্রেডার। আপনার কাজ হলো প্রদত্ত OHLCV ডাটা, প্রাইস মুভমেন্ট এবং মার্কেট স্ট্রাকচার বিশ্লেষণ করে একটি পূর্ণাঙ্গ, প্রমাণভিত্তিক এবং অ্যাকশনেবল টেকনিক্যাল রিপোর্ট তৈরি করা। আপনার প্রতিটি মন্তব্য যুক্তিসঙ্গত, ডাটা-ড্রিভেন এবং প্যাটার্ন-ভিত্তিক হতে হবে।
 
 📊 ইনপুট ডাটা:
@@ -815,8 +785,8 @@ class StockDataFetcher:
 
 【কি ইনসাইটস (Top 5 Points)】
 ১. [সবচেয়ে গুরুত্বপূর্ণ টেকনিক্যাল ফ্যাক্টর - প্যাটার্ন/ট্রেন্ড/লেভেল]
-২. [RSI/MACD ডাইভারজেন্স স্ট্যাটাস - ক্লাসিক/হিডেন, কনফার্মড/পেন্ডিং]
-৩. [কনফ্লুয়েন্স জোন - ফিবো + অর্ডার ব্লক + FVG + লিকুইডিটি]
+２. [RSI/MACD ডাইভারজেন্স স্ট্যাটাস - ক্লাসিক/হিডেন, কনফার্মড/পেন্ডিং]
+３. [কনফ্লুয়েন্স জোন - ফিবো + অর্ডার ব্লক + FVG + লিকুইডিটি]
 ４. [ভলিউম প্যাটার্ন - স্পাইক/ডাইভারজেন্স/ড্রাই-আপ]
 ５. [এলিয়ট ওয়েভ অবস্থান + পরবর্তী প্রজেকশন]
 
@@ -892,6 +862,20 @@ bot_application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 user_last = {}
 generated_files = {}
 
+def create_ai_share_links(file_url: str, symbol: str):
+    """AI অ্যাপে শেয়ার করার জন্য লিংক তৈরি করে"""
+    encoded_url = urllib.parse.quote(file_url, safe='')
+    
+    # বিভিন্ন AI অ্যাপের জন্য ডিপ লিংক
+    links = {
+        "gemini": f"https://gemini.google.com/?q={encoded_url}",
+        "groq": f"https://groq.com/?upload={encoded_url}",
+        "chatgpt": f"https://chat.openai.com/?upload={encoded_url}",
+        "claude": f"https://claude.ai/new?file={encoded_url}"
+    }
+    
+    return links
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     text = f"""
@@ -903,19 +887,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 1. 📈 যেকোনো স্টক সিম্বল পাঠান (যেমন: GP, ACI, BEXIMCO)
 2. 📊 আমি হাগিং ফেস থেকে সম্পূর্ণ ডাটা আনব (সব কলাম সহ)
 3. 📝 সম্পূর্ণ প্রফেশনাল অ্যানালাইসিস প্রম্পট তৈরি করব
-4. 📥 ফাইল ডাউনলোড করুন
-5. 🤖 যেকোনো AI টুলে আপলোড করে বিশ্লেষণ করান
-
-**ফাইলে যা থাকছে:**
-✅ সম্পূর্ণ ডাটা (সব কলাম সহ)
-✅ এলিয়ট ওয়েভ সম্পূর্ণ লাইব্রেরি
-✅ SMC সম্পূর্ণ লাইব্রেরি
-✅ প্রাইস অ্যাকশন সম্পূর্ণ লাইব্রেরি
-✅ চার্ট প্যাটার্ন সম্পূর্ণ লাইব্রেরি
-✅ ফিবোনাচ্চি অ্যানালাইসিস
-✅ RSI/MACD/OBV ডাইভারজেন্স সম্পূর্ণ লাইব্রেরি
-✅ ট্রেডিং প্ল্যান টেমপ্লেট
-✅ রিস্ক ম্যানেজমেন্ট ফ্রেমওয়ার্ক
+4. 📥 ফাইল ডাউনলোড লিংক পাবেন
+5. 🔗 নিচের বাটনে ক্লিক করে সরাসরি AI অ্যাপে ফাইল আপলোড করুন
 
 **কমান্ডসমূহ:**
 /start - বট চালু করুন
@@ -961,23 +934,15 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 ２️⃣ **ফাইল ডাউনলোড করুন**
 বট ডাটা + সম্পূর্ণ প্রম্পট একসাথে ফাইল তৈরি করবে
 
-３️⃣ **AI টুলে আপলোড করুন**
-• Gemini AI (gemini.google.com)
-• Groq (groq.com)
-• ChatGPT (chat.openai.com)
-• Claude (claude.ai)
+３️⃣ **AI অ্যাপে শেয়ার করুন**
+নিচের লিংকে ক্লিক করে সরাসরি AI অ্যাপে ফাইল আপলোড করুন:
+• 🤖 **Gemini AI** - গুগলের AI অ্যাসিস্ট্যান্ট
+• 🚀 **Groq** - দ্রুতগতির AI
+• 💬 **ChatGPT** - OpenAI-র চ্যাটবট
+• 🧠 **Claude** - Anthropic-এর AI
 
 ４️⃣ **বিশ্লেষণ করতে বলুন**
 AI কে বলুন: "এই ডাটা এবং প্রম্পট অনুযায়ী সম্পূর্ণ টেকনিক্যাল অ্যানালাইসিস করুন"
-
-**ফাইলের বিশেষত্ব:**
-✅ সম্পূর্ণ এলিয়ট ওয়েভ লাইব্রেরি
-✅ সম্পূর্ণ SMC লাইব্রেরি
-✅ সম্পূর্ণ ক্যান্ডেলস্টিক লাইব্রেরি
-✅ সম্পূর্ণ চার্ট প্যাটার্ন লাইব্রেরি
-✅ সম্পূর্ণ ফিবোনাচ্চি অ্যানালাইসিস
-✅ RSI/MACD/OBV ডাইভারজেন্স সম্পূর্ণ লাইব্রেরি
-✅ সম্পূর্ণ ট্রেডিং প্ল্যান টেমপ্লেট
 
 **কমান্ড:**
 /start - বট চালু
@@ -1002,7 +967,7 @@ async def about_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 ✅ ৪০০টি লেটেস্ট রো
 ✅ সম্পূর্ণ প্রম্পট (কোনো কিছু বাদ দেওয়া হয়নি)
 ✅ ১ ক্লিকে ডাউনলোড
-✅ যেকোনো AI টুলে ব্যবহার
+✅ সরাসরি AI অ্যাপে শেয়ার লিংক
 
 **ডাইভারজেন্স লাইব্রেরি:**
 • RSI ক্লাসিক/হিডেন ডাইভারজেন্স
@@ -1010,6 +975,12 @@ async def about_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 • OBV ডাইভারজেন্স
 • মোমেন্টাম ডাইভারজেন্স
 • মাল্টি-টাইমফ্রেম ডাইভারজেন্স
+
+**সাপোর্টেড AI অ্যাপস:**
+• Gemini AI
+• Groq
+• ChatGPT
+• Claude
 
 **ডাটা সোর্স:**
 huggingface.co/datasets/ahashanahmed/csv
@@ -1094,6 +1065,9 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             download_url = f"http://localhost:10000/download/{file_id}"
         
+        # AI অ্যাপের শেয়ার লিংক তৈরি
+        ai_links = create_ai_share_links(download_url, symbol)
+        
         price_col = None
         for col in ['close', 'Close', 'price', 'Price', 'last', 'Last']:
             if col in df.columns:
@@ -1111,8 +1085,23 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
 • কলাম সংখ্যা: {len(df.columns)}টি
 • তৈরি করা হয়েছে: {datetime.now().strftime('%d %B, %Y - %I:%M %p')}
 
-📥 **ডাউনলোড লিঙ্ক:**
-[ক্লিক করে ফাইল ডাউনলোড করুন]({download_url})
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📥 **ডাউনলোড লিংক:**
+[📄 {symbol}_analysis.txt]({download_url})
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🤖 **AI অ্যাপে সরাসরি শেয়ার করুন:**
+
+• [✨ Gemini AI তে বিশ্লেষণ করুন]({ai_links['gemini']})
+• [⚡ Groq AI তে বিশ্লেষণ করুন]({ai_links['groq']})
+• [💬 ChatGPT এ বিশ্লেষণ করুন]({ai_links['chatgpt']})
+• [🧠 Claude AI তে বিশ্লেষণ করুন]({ai_links['claude']})
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+💡 **কিভাবে ব্যবহার করবেন:**
+1. উপরের যেকোনো AI লিংকে ক্লিক করুন
+2. AI অ্যাপ ওপেন হলে ফাইলটি আপলোড করুন
+3. AI কে বলুন: "এই ডাটা এবং প্রম্পট অনুযায়ী সম্পূর্ণ টেকনিক্যাল অ্যানালাইসিস করুন"
 
 📄 **ফাইলে যা থাকছে (সম্পূর্ণ):**
 ✅ সম্পূর্ণ ডাটা ({len(df)}টি রো, {len(df.columns)}টি কলাম)
@@ -1125,11 +1114,7 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
 ✅ ট্রেডিং প্ল্যান টেমপ্লেট (এন্ট্রি + SL + TP + R:R)
 ✅ রিস্ক ম্যানেজমেন্ট ফ্রেমওয়ার্ক
 
-💡 **AI তে ব্যবহার করুন:**
-ফাইলটি আপনার পছন্দের AI টুলে আপলোড করে বলুন:
-"এই ডাটা এবং প্রম্পট অনুযায়ী সম্পূর্ণ টেকনিক্যাল অ্যানালাইসিস করুন। {symbol} সিম্বলের জন্য বিস্তারিত বিশ্লেষণ, চার্ট প্যাটার্ন শনাক্তকরণ, RSI/MACD ডাইভারজেন্স চেক, ট্রেডিং সেটআপ এবং অ্যাকশনেবল সাজেশন দিন।"
-
-⏰ লিঙ্ক ৩০ মিনিটের জন্য সক্রিয় থাকবে।
+⏰ লিংক ৩০ মিনিটের জন্য সক্রিয় থাকবে।
 """
         
         await msg.edit_text(response, parse_mode='Markdown', disable_web_page_preview=False)
