@@ -133,7 +133,6 @@ class StockDataFetcher:
                 
                 self.df_cache = pd.read_csv(path, encoding='utf-8-sig')
                 logger.info(f"মোট {len(self.df_cache)}টি রো লোড করা হয়েছে")
-                logger.info(f"কলাম সমূহ: {list(self.df_cache.columns)}")
                 
                 symbol_col = self._find_symbol_column(self.df_cache)
                 if symbol_col:
@@ -141,7 +140,6 @@ class StockDataFetcher:
                     symbols = [s for s in symbols if s and s != 'nan' and len(s) > 0]
                     self.all_symbols = sorted(symbols)
                     logger.info(f"মোট {len(self.all_symbols)}টি সিম্বল পাওয়া গেছে")
-                    logger.info(f"প্রথম ২০টি সিম্বল: {self.all_symbols[:20]}")
                 
                 return self.all_symbols
                 
@@ -231,7 +229,7 @@ class StockDataFetcher:
         df_clean = df.copy()
         df_clean = df_clean.fillna('')
         
-        # গুরুত্বপূর্ণ: ডাটা স্ট্রিং তৈরি করুন
+        # ডাটা স্ট্রিং তৈরি করুন
         data_string = df_clean.to_string()
         logger.info(f"ডাটা স্ট্রিং তৈরি করা হয়েছে: {len(data_string)} অক্ষর")
         
@@ -252,7 +250,7 @@ class StockDataFetcher:
             end_date = df[date_col].max()
             time_period = f"📅 সময়কাল: {start_date} থেকে {end_date}"
         
-        # সম্পূর্ণ ফাইল কন্টেন্ট তৈরি করুন - ডাটা সঠিকভাবে যুক্ত হয়েছে তা নিশ্চিত করুন
+        # সম্পূর্ণ ফাইল কন্টেন্ট তৈরি করুন
         file_content = f"""🤖 **ভূমিকা:** আপনি একজন বিশ্বসেরা প্রফেশনাল টেকনিক্যাল অ্যানালিস্ট, চার্ট রিডার এবং ট্রেডার। আপনার কাজ হলো প্রদত্ত OHLCV ডাটা, প্রাইস মুভমেন্ট এবং মার্কেট স্ট্রাকচার বিশ্লেষণ করে একটি পূর্ণাঙ্গ, প্রমাণভিত্তিক এবং অ্যাকশনেবল টেকনিক্যাল রিপোর্ট তৈরি করা। আপনার প্রতিটি মন্তব্য যুক্তিসঙ্গত, ডাটা-ড্রিভেন এবং প্যাটার্ন-ভিত্তিক হতে হবে।
 
 ⚠️ **গুরুত্বপূর্ণ নির্দেশনা:** আপনার সম্পূর্ণ উত্তর **বাংলা ভাষায়** দিন। ইমোজি ব্যবহার করুন। মার্কডাউন ফরম্যাটে উত্তর দিন।
@@ -268,11 +266,8 @@ class StockDataFetcher:
 • **কলাম সমূহ:** {', '.join(columns_list[:15])}{'...' if len(columns_list) > 15 else ''}
 
 📋 **সম্পূর্ণ ডাটা (সব কলাম সহ):**
-"""
 
-data_string
-
-"""
+{data_string}
 
 
 ═══════════════════════════════════════════════════════════
@@ -503,7 +498,7 @@ data_string
 • [সতর্কতা ১]
 • [সতর্কতা ২]
 
-💡 **নোট:** এই বিশ্লেষণ সম্পূর্ণ টেকনিক্যাল ডাটার উপর ভিত্তি করে। সবসময় নিজস্ব রিসার্চ এবং রিস্ক ম্যানেজমেন্ট প্রয়োগ করুন।
+💡 **নোট:** এই বিশ্লেষণ সম্পূর্ণ টেকনিক্যাল ডাটার উপর ভিত্তি করে। সবসময় নিজস্ব রিসার্চ এবং রিস্ক ম্যানেজমেন্ট প্রয়োগ করুন。
 
 ═══════════════════════════════════════════════════════════
 
@@ -511,7 +506,6 @@ data_string
 """
         
         logger.info(f"ফাইল তৈরি করা হয়েছে: {len(data_string)} অক্ষরের ডাটা সহ")
-        logger.info(f"ফাইলের প্রথম 500 অক্ষর: {file_content[:500]}")
         
         return file_content
 
@@ -538,7 +532,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 5. 🤖 AI টুলে ফাইল আপলোড করে বিশ্লেষণ করান
 
 **AI টুলে ব্যবহারের সময় বলুন:**
-"এই ডাটা এবং প্রম্পট অনুযায়ী সম্পূর্ণ টেকনিক্যাল অ্যানালাইসিস করুন। উত্তর বাংলায় দিন।"
+"এই ডাটা এবং প্রম্পট অনুযায়ী সম্পূর্ণ টেকনিক্যাল অ্যানালাইসিস করুন। উত্তর বাংলায় দিন。"
 
 **কমান্ডসমূহ:**
 /start - বট চালু করুন
@@ -591,7 +585,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 • Claude (claude.ai)
 
 ৪️⃣ **বাংলায় বিশ্লেষণ করতে বলুন**
-AI কে বলুন: "এই ডাটা এবং প্রম্পট অনুযায়ী সম্পূর্ণ টেকনিক্যাল অ্যানালাইসিস করুন। উত্তর **বাংলা ভাষায়** দিন।"
+AI কে বলুন: "এই ডাটা এবং প্রম্পট অনুযায়ী সম্পূর্ণ টেকনিক্যাল অ্যানালাইসিস করুন। উত্তর **বাংলা ভাষায়** দিন。"
 
 **কমান্ড:**
 /start - বট চালু
@@ -872,4 +866,3 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         logger.info("🛑 বট বন্ধ করা হয়েছে")
-
