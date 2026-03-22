@@ -1,15 +1,14 @@
 import os
-import logging
 import asyncio
+import logging
 import tempfile
 import traceback
 from datetime import datetime
 
 import pandas as pd
 from flask import Flask, request, jsonify
-from dotenv import load_dotenv
 from telegram import Update
-from telegram.ext import Application, MessageHandler, filters, ContextTypes
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from google import genai
 from google.genai import types
 from huggingface_hub import hf_hub_download, HfApi
@@ -17,14 +16,13 @@ from huggingface_hub import hf_hub_download, HfApi
 # ================================
 # ENV + Logging
 # ================================
-load_dotenv()
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 GEMINI_API_TOKEN = os.getenv("GEMINI_API_TOKEN")
 HF_TOKEN = os.getenv("HF_TOKEN")
 RENDER_URL = os.getenv("RENDER_EXTERNAL_URL")
-
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
 # ================================
 # Flask app (health check)
@@ -36,7 +34,7 @@ def health():
     return jsonify({"status": "ok", "time": datetime.now().isoformat()})
 
 # ================================
-# Stock Analyzer (async + rate-limit)
+# Stock Analyzer
 # ================================
 class StockAnalyzer:
     def __init__(self):
@@ -64,7 +62,7 @@ class StockAnalyzer:
                     local_dir=temp
                 )
                 df = pd.read_csv(path)
-                col = next((c for c in df.columns if c.lower() in ["symbol","ticker"]), None)
+                col = next((c for c in df.columns if c.lower() in ["symbol", "ticker"]), None)
                 if not col:
                     return None
                 df = df[df[col].astype(str).str.upper() == symbol.upper()]
@@ -106,16 +104,22 @@ class StockAnalyzer:
             return "⚠️ Server error"
 
 # ================================
-# Telegram Bot (async webhook)
+# Telegram Bot
 # ================================
 analyzer = StockAnalyzer()
 application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 user_last = {}  # flood control
 
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "👋 Hello! Bot is running.\nSend a stock symbol like `AAPL` to analyze."
+    )
+
 async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip().upper()
     user_id = update.effective_user.id
 
+    # Flood control
     now = asyncio.get_event_loop().time()
     if user_id in user_last and now - user_last[user_id] < 5:
         await update.message.reply_text("⏳ অপেক্ষা করুন...")
@@ -124,7 +128,7 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     msg = await update.message.reply_text("⏳ Processing...")
     df = await analyzer.get_stock_data(text)
-    if df is None:
+    if df is None or df.empty:
         await msg.edit_text("❌ Data পাওয়া যায়নি")
         return
 
@@ -134,7 +138,8 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         await msg.edit_text("❌ Error হয়েছে")
 
-application.add_handler(MessageHandler(filters.TEXT, handle))
+application.add_handler(CommandHandler("start", start))
+application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
 
 # ================================
 # Webhook endpoint
@@ -155,12 +160,14 @@ if __name__ == "__main__":
 
     async def main():
         # Set Telegram webhook
-        await application.bot.set_webhook(f"{RENDER_URL}/webhook")
-        print(f"✅ Webhook set to {RENDER_URL}/webhook")
+        webhook_url = f"{RENDER_URL}/webhook"
+        await application.bot.set_webhook(webhook_url)
+        print(f"✅ Webhook set to {webhook_url}")
 
-        # Serve Flask async
+        # Serve Flask app asynchronously
         config = Config()
-        config.bind = ["0.0.0.0:10000"]
+        port = int(os.environ.get("PORT", 10000))
+        config.bind = [f"0.0.0.0:{port}"]
         await hypercorn.asyncio.serve(app, config)
 
     asyncio.run(main())
