@@ -6,4 +6,4 @@ flask
 python-dotenv
 huggingface_hub
 hypercorn==0.18.0
-flask[async]
+flask[async]>=2.6
