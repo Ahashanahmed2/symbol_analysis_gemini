@@ -80,6 +80,66 @@ class StockDataFetcher:
         self.repo_id = "ahashanahmed/csv"
         self.hf_api = HfApi() if HF_TOKEN else None
         self.hf_token = HF_TOKEN
+        self.all_symbols = None  # ক্যাশে রাখার জন্য
+
+    async def get_all_symbols(self):
+        """ডাটাসেটের সব সিম্বল লিস্ট করুন"""
+        if self.all_symbols is not None:
+            return self.all_symbols
+        
+        try:
+            if not self.hf_token:
+                return []
+            
+            files = self.hf_api.list_repo_files(
+                repo_id=self.repo_id, 
+                repo_type="dataset", 
+                token=self.hf_token
+            )
+            
+            csv_file = None
+            for f in files:
+                if f.endswith(".csv"):
+                    csv_file = f
+                    break
+            
+            if not csv_file:
+                return []
+            
+            with tempfile.TemporaryDirectory() as temp:
+                path = hf_hub_download(
+                    repo_id=self.repo_id,
+                    filename=csv_file,
+                    repo_type="dataset",
+                    token=self.hf_token,
+                    local_dir=temp
+                )
+                
+                # প্রথম 1000 রো পড়ুন শুধু সিম্বল সংগ্রহের জন্য
+                df = pd.read_csv(path, nrows=1000)
+                
+                # সিম্বল কলাম খুঁজুন
+                symbol_col = None
+                possible_cols = ['symbol', 'Symbol', 'SYMBOL', 'ticker', 'Ticker', 
+                                'stock', 'Stock', 'name', 'Name', 'code', 'Code']
+                
+                for col in possible_cols:
+                    if col in df.columns:
+                        symbol_col = col
+                        break
+                
+                if not symbol_col:
+                    symbol_col = df.columns[0]
+                
+                # ইউনিক সিম্বল লিস্ট
+                symbols = df[symbol_col].astype(str).str.strip().str.upper().unique()
+                self.all_symbols = sorted(symbols)
+                logger.info(f"মোট {len(self.all_symbols)}টি সিম্বল পাওয়া গেছে")
+                return self.all_symbols
+                
+        except Exception as e:
+            logger.error(f"সিম্বল লিস্ট পেতে সমস্যা: {e}")
+            return []
 
     async def get_stock_data(self, symbol: str, rows=400):
         """হাগিং ফেস থেকে সম্পূর্ণ ডাটা সংগ্রহ করুন (সব কলাম সহ)"""
@@ -89,7 +149,7 @@ class StockDataFetcher:
             # চেক করুন HF_TOKEN আছে কিনা
             if not self.hf_token:
                 logger.error("HF_TOKEN সেট করা নেই!")
-                return None, 0
+                return None, 0, []
 
             # ডাটাসেটের ফাইল লিস্ট করুন
             files = self.hf_api.list_repo_files(
@@ -107,7 +167,7 @@ class StockDataFetcher:
             
             if not csv_file:
                 logger.error("কোন সিএসভি ফাইল পাওয়া যায়নি")
-                return None, 0
+                return None, 0, []
 
             logger.info(f"CSV ফাইল পাওয়া গেছে: {csv_file}")
 
@@ -135,7 +195,7 @@ class StockDataFetcher:
                 
                 if df is None:
                     logger.error("কোন এনকোডিং দিয়ে ফাইল পড়া যায়নি")
-                    return None, 0
+                    return None, 0, []
 
                 logger.info(f"মোট কলাম: {len(df.columns)}")
                 logger.info(f"মোট রো: {len(df)}")
@@ -158,14 +218,29 @@ class StockDataFetcher:
 
                 # স্ট্রিং-এ কনভার্ট করে ফিল্টার করুন
                 df[symbol_col] = df[symbol_col].astype(str).str.strip().str.upper()
+                
+                # এক্সাক্ট ম্যাচ
                 filtered_df = df[df[symbol_col] == symbol.upper()]
-
+                
+                similar_symbols = []
+                
                 if filtered_df.empty:
                     # আংশিক ম্যাচ চেষ্টা করুন
                     filtered_df = df[df[symbol_col].str.contains(symbol.upper(), na=False)]
+                    
+                    # যদি আংশিক ম্যাচেও না পায়, তাহলে সিমিলার সিম্বল খুঁজুন
                     if filtered_df.empty:
+                        # সব সিম্বল থেকে ম্যাচিং খুঁজুন
+                        all_symbols_list = df[symbol_col].unique()
+                        for s in all_symbols_list[:100]:  # প্রথম 100টি চেক করুন
+                            if symbol.upper() in s or s in symbol.upper():
+                                similar_symbols.append(s)
+                        
+                        similar_symbols = list(set(similar_symbols))[:10]  # 10টি পর্যন্ত দেখান
+                        
                         logger.warning(f"{symbol} এর জন্য কোন ডাটা পাওয়া যায়নি")
-                        return None, 0
+                        logger.info(f"সিমিলার সিম্বল: {similar_symbols}")
+                        return None, 0, similar_symbols
 
                 # সর্বশেষ rows টি নিন (যতটুকু আছে)
                 rows_available = len(filtered_df)
@@ -175,11 +250,11 @@ class StockDataFetcher:
                 
                 result_df = filtered_df.tail(rows_to_take)
                 
-                return result_df, rows_available
+                return result_df, rows_available, similar_symbols
 
         except Exception as e:
             logger.error(f"ডাটা ফেচিং এ সমস্যা: {traceback.format_exc()}")
-            return None, 0
+            return None, 0, []
 
     def create_full_file(self, symbol: str, df: pd.DataFrame, rows_available: int):
         """সম্পূর্ণ ডাটা + সম্পূর্ণ প্রম্পট একসাথে ফাইল তৈরি করুন"""
@@ -194,7 +269,7 @@ class StockDataFetcher:
         # কলামের নাম লিস্ট
         columns_list = list(df.columns)
         
-        # সম্পূর্ণ প্রম্পট তৈরি করুন
+        # সম্পূর্ণ প্রম্পট তৈরি করুন (আপনার দেওয়া সম্পূর্ণ টেক্সট)
         prompt = f"""🤖 ভূমিকা: আপনি একজন বিশ্বসেরা প্রফেশনাল টেকনিক্যাল অ্যানালিস্ট, চার্ট রিডার এবং ট্রেডার। আপনার কাজ হলো প্রদত্ত OHLCV ডাটা, প্রাইস মুভমেন্ট এবং মার্কেট স্ট্রাকচার বিশ্লেষণ করে একটি পূর্ণাঙ্গ, প্রমাণভিত্তিক এবং অ্যাকশনেবল টেকনিক্যাল রিপোর্ট তৈরি করা। আপনার প্রতিটি মন্তব্য যুক্তিসঙ্গত, ডাটা-ড্রিভেন এবং প্যাটার্ন-ভিত্তিক হতে হবে।
 
 📊 ইনপুট ডাটা:
@@ -675,10 +750,10 @@ class StockDataFetcher:
 
 【কি ইনসাইটস (Top 5 Points)】
 ১. [ডাটা অনুযায়ী সবচেয়ে গুরুত্বপূর্ণ টেকনিক্যাল ফ্যাক্টর নির্ধারণ করুন]
-২. [ডাটা অনুযায়ী দ্বিতীয় গুরুত্বপূর্ণ ফ্যাক্টর নির্ধারণ করুন]
-৩. [ডাটা অনুযায়ী তৃতীয় গুরুত্বপূর্ণ ফ্যাক্টর নির্ধারণ করুন]
-৪. [ডাটা অনুযায়ী চতুর্থ গুরুত্বপূর্ণ ফ্যাক্টর নির্ধারণ করুন]
-৫. [ডাটা অনুযায়ী পঞ্চম গুরুত্বপূর্ণ ফ্যাক্টর নির্ধারণ করুন]
+２. [ডাটা অনুযায়ী দ্বিতীয় গুরুত্বপূর্ণ ফ্যাক্টর নির্ধারণ করুন]
+３. [ডাটা অনুযায়ী তৃতীয় গুরুত্বপূর্ণ ফ্যাক্টর নির্ধারণ করুন]
+４. [ডাটা অনুযায়ী চতুর্থ গুরুত্বপূর্ণ ফ্যাক্টর নির্ধারণ করুন]
+５. [ডাটা অনুযায়ী পঞ্চম গুরুত্বপূর্ণ ফ্যাক্টর নির্ধারণ করুন]
 
 【রিস্ক ফ্যাক্টরস এবং সতর্কতা (Top 3)】
 ⚠️ [ডাটা অনুযায়ী প্রাইমারি রিস্ক নির্ধারণ করুন]
@@ -711,7 +786,7 @@ class StockDataFetcher:
 ⚡ **কুইক ইনসাইট:** [৩টি বুলেট পয়েন্টে মূল মেসেজ]
 ⚠️ **রিস্ক নোট:** [২টি বুলেট পয়েন্টে সতর্কতা]
 
-💡 **নোট:** এই বিশ্লেষণ সম্পূর্ণ টেকনিক্যাল ডাটা এবং প্যাটার্ন রিকগনিশনের উপর ভিত্তি করে। মার্কেট অনিশ্চিত, সবসময় নিজস্ব রিসার্চ এবং রিস্ক ম্যানেজমেন্ট প্রয়োগ করুন। কোনো ফিন্যান্সিয়াল অ্যাডভাইস নয়।
+💡 **নোট:** এই বিশ্লেষণ সম্পূর্ণ টেকনিক্যাল ডাটা এবং প্যাটার্ন রিকগনিশনের উপর ভিত্তি করে। মার্কেট অনিশ্চিত, সবসময় নিজস্ব রিসার্চ এবং রিস্ক ম্যানেজমেন্ট প্রয়োগ করুন। কোনো ফিন্যান্সিয়াল অ্যাডভাইস নয়。
 
 ═══════════════════════════════════════════════════════════
 """
@@ -742,6 +817,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 4. 📥 ফাইল ডাউনলোড করুন
 5. 🤖 যেকোনো AI টুলে আপলোড করে বিশ্লেষণ করান
 
+**উপলব্ধ স্টক সিম্বল:**
+GP, ACI, BEXIMCO, SQUARE, BRACBANK, CITYBANK, DUTCHBANGL, IFAD, JAMUNA, MERCANBANK, OLYMPIC, RENATA, UPGDCL, BATBC, GLAXOSMITHKLINE
+
 **বিশেষ নোট:**
 🔴 বট কোনো ক্যালকুলেশন করে না
 🔴 শুধু ডাটা + প্রম্পট একসাথে দেয়
@@ -751,10 +829,33 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 /start - বট চালু করুন
 /help - সাহায্য দেখুন
 /about - বট সম্পর্কে জানুন
+/symbols - উপলব্ধ সিম্বল দেখুন
 
 এখন আপনার পছন্দের স্টক সিম্বল পাঠান!
 """
     await update.message.reply_text(text, parse_mode='Markdown')
+
+async def symbols_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """উপলব্ধ সিম্বল লিস্ট দেখান"""
+    msg = await update.message.reply_text("🔍 সিম্বল লিস্ট সংগ্রহ করা হচ্ছে...")
+    
+    symbols = await fetcher.get_all_symbols()
+    
+    if symbols:
+        # সিম্বল গুলো 20টি করে গ্রুপ করুন
+        symbol_text = "📊 **উপলব্ধ স্টক সিম্বল:**\n\n"
+        for i in range(0, min(len(symbols), 100), 20):
+            group = symbols[i:i+20]
+            symbol_text += "• " + " • ".join(group) + "\n"
+        
+        if len(symbols) > 100:
+            symbol_text += f"\n... এবং আরও {len(symbols) - 100}টি সিম্বল"
+        
+        symbol_text += "\n\n💡 আপনি উপরের যেকোনো সিম্বল ব্যবহার করতে পারেন।"
+        
+        await msg.edit_text(symbol_text, parse_mode='Markdown')
+    else:
+        await msg.edit_text("❌ সিম্বল লিস্ট পাওয়া যায়নি। পরে আবার চেষ্টা করুন।")
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = """
@@ -764,6 +865,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 ১️⃣ **স্টক সিম্বল পাঠান**
 যেমন: GP, ACI, BEXIMCO, SQUARE, BRACBANK, CITYBANK
+(সম্পূর্ণ লিস্ট দেখতে /symbols কমান্ড ব্যবহার করুন)
 
 ২️⃣ **ফাইল ডাউনলোড করুন**
 বট সম্পূর্ণ ডাটা + প্রম্পট একসাথে একটি ফাইল তৈরি করবে। ডাউনলোড লিঙ্কে ক্লিক করুন।
@@ -778,20 +880,11 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 ৪️⃣ **বিশ্লেষণ করতে বলুন**
 AI কে বলুন: "এই ডাটা এবং প্রম্পট অনুযায়ী সম্পূর্ণ টেকনিক্যাল অ্যানালাইসিস করুন"
 
-**ফাইলে যা থাকছে:**
-✅ সম্পূর্ণ ডাটা (সব কলাম সহ)
-✅ এলিয়ট ওয়েভ সম্পূর্ণ লাইব্রেরি
-✅ SMC সম্পূর্ণ লাইব্রেরি
-✅ প্রাইস অ্যাকশন সম্পূর্ণ লাইব্রেরি
-✅ চার্ট প্যাটার্ন সম্পূর্ণ লাইব্রেরি
-✅ ফিবোনাচ্চি অ্যানালাইসিস
-✅ ট্রেডিং প্ল্যান টেমপ্লেট
-✅ রিস্ক ম্যানেজমেন্ট ফ্রেমওয়ার্ক
-
 **উপলব্ধ কমান্ড:**
 /start - বট চালু করুন
 /help - এই সাহায্য দেখুন
 /about - বট সম্পর্কে জানুন
+/symbols - উপলব্ধ সিম্বল লিস্ট দেখুন
 """
     await update.message.reply_text(text, parse_mode='Markdown')
 
@@ -812,6 +905,7 @@ async def about_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 ✅ কোনো ক্যালকুলেশন নেই
 ✅ ১ ক্লিকে ডাউনলোড
 ✅ যেকোনো AI টুলে ব্যবহার উপযোগী
+✅ সিমিলার সিম্বল সাজেশন
 
 **কিভাবে ব্যবহার করবেন:**
 1. ফাইল ডাউনলোড করুন
@@ -847,28 +941,25 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     try:
-        # স্টক ডাটা সংগ্রহ - সঠিকভাবে আনপ্যাক করুন
+        # স্টক ডাটা সংগ্রহ
         result = await fetcher.get_stock_data(symbol, rows=400)
         
         # চেক করুন result সঠিকভাবে এসেছে কিনা
         if result is None:
             await msg.edit_text(
                 f"❌ **{symbol}** সিম্বলের জন্য কোন ডাটা পাওয়া যায়নি!\n\n"
-                "💡 সঠিক স্টক সিম্বল ব্যবহার করুন:\n"
-                "• GP (গ্রামীণফোন)\n"
-                "• ACI\n"
-                "• BEXIMCO\n"
-                "• SQUARE\n"
-                "• BRACBANK\n"
-                "• CITYBANK\n\n"
-                "অথবা /help কমান্ড ব্যবহার করে সাহায্য নিন।",
+                "💡 সঠিক স্টক সিম্বল ব্যবহার করুন।\n"
+                "📋 সম্পূর্ণ সিম্বল লিস্ট দেখতে /symbols কমান্ড ব্যবহার করুন।",
                 parse_mode='Markdown'
             )
             return
         
         # সঠিকভাবে আনপ্যাক করুন
-        if len(result) == 2:
+        if len(result) == 3:
+            df, rows_available, similar_symbols = result
+        elif len(result) == 2:
             df, rows_available = result
+            similar_symbols = []
         else:
             logger.error(f"Unexpected result format: {result}")
             await msg.edit_text(
@@ -879,17 +970,24 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         if df is None or df.empty:
-            await msg.edit_text(
-                f"❌ **{symbol}** সিম্বলের জন্য কোন ডাটা পাওয়া যায়নি!\n\n"
-                "💡 সঠিক স্টক সিম্বল ব্যবহার করুন।",
-                parse_mode='Markdown'
-            )
+            error_msg = f"❌ **{symbol}** সিম্বলের জন্য কোন ডাটা পাওয়া যায়নি!\n\n"
+            
+            if similar_symbols:
+                error_msg += "🔍 **মিল পাওয়া সিম্বল:**\n"
+                for s in similar_symbols[:10]:
+                    error_msg += f"• {s}\n"
+                error_msg += "\n💡 উপরের সিম্বলগুলোর মধ্যে একটি ব্যবহার করে দেখুন।\n"
+            
+            error_msg += "\n📋 সম্পূর্ণ সিম্বল লিস্ট দেখতে /symbols কমান্ড ব্যবহার করুন।"
+            
+            await msg.edit_text(error_msg, parse_mode='Markdown')
             return
 
         await msg.edit_text(
             f"📊 **{symbol}**\n\n"
             "✅ **ধাপ ১/২:** ডাটা সংগ্রহ সম্পূর্ণ!\n"
             f"📈 মোট রো: {rows_available}টি, ব্যবহৃত: {len(df)}টি\n"
+            f"📋 কলাম: {len(df.columns)}টি\n"
             "📝 **ধাপ ২/২:** ফাইল তৈরি করা হচ্ছে...\n"
             "⏳ অনুগ্রহ করে অপেক্ষা করুন...",
             parse_mode='Markdown'
@@ -955,7 +1053,7 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
 💡 **কিভাবে ব্যবহার করবেন:**
 ১. ফাইলটি ডাউনলোড করুন
 ২. আপনার পছন্দের AI টুলে আপলোড করুন (Gemini, Groq, ChatGPT, Claude)
-৩. AI কে বলুন: "এই ডাটা এবং প্রম্পট অনুযায়ী সম্পূর্ণ টেকনিক্যাল অ্যানালাইসিস করুন"
+３. AI কে বলুন: "এই ডাটা এবং প্রম্পট অনুযায়ী সম্পূর্ণ টেকনিক্যাল অ্যানালাইসিস করুন"
 
 ⚠️ **গুরুত্বপূর্ণ নোট:**
 • বট কোনো ক্যালকুলেশন করেনি
@@ -1015,6 +1113,7 @@ def download_file(file_id):
 bot_application.add_handler(CommandHandler("start", start))
 bot_application.add_handler(CommandHandler("help", help_command))
 bot_application.add_handler(CommandHandler("about", about_command))
+bot_application.add_handler(CommandHandler("symbols", symbols_command))
 bot_application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
 
 # ================================
