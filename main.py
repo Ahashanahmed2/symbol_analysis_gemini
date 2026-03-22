@@ -4,8 +4,11 @@ import logging
 import tempfile
 import traceback
 from datetime import datetime
+import threading
+import json
 
 import pandas as pd
+from flask import Flask, request, jsonify
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from google import genai
@@ -22,6 +25,67 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 GEMINI_API_TOKEN = os.getenv("GEMINI_API_TOKEN")
 HF_TOKEN = os.getenv("HF_TOKEN")
 RENDER_URL = os.getenv("RENDER_EXTERNAL_URL")
+
+# ================================
+# Flask app for UptimeRobot
+# ================================
+flask_app = Flask(__name__)
+
+@flask_app.route('/')
+def health():
+    """Health check endpoint for UptimeRobot"""
+    return jsonify({
+        'status': 'active',
+        'message': 'Stock Analysis Bot is running!',
+        'timestamp': datetime.now().isoformat()
+    })
+
+@flask_app.route('/health')
+def health_check():
+    """Detailed health check"""
+    return jsonify({
+        'status': 'healthy',
+        'bot_status': 'active',
+        'timestamp': datetime.now().isoformat()
+    }), 200
+
+@flask_app.route('/ping')
+def ping():
+    """Ping endpoint for UptimeRobot"""
+    return jsonify({'status': 'pong'}), 200
+
+@flask_app.route('/webhook', methods=['POST'])
+def webhook():
+    """Telegram webhook endpoint"""
+    try:
+        data = request.get_json()
+        if not data:
+            return 'No data', 400
+        
+        # Process update in background to avoid blocking
+        def process_update():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                update = Update.de_json(data, bot_application.bot)
+                loop.run_until_complete(bot_application.update_queue.put(update))
+            except Exception as e:
+                logger.error(f"Error processing update: {e}")
+            finally:
+                loop.close()
+        
+        thread = threading.Thread(target=process_update)
+        thread.start()
+        
+        return 'ok', 200
+    except Exception as e:
+        logger.error(f"Webhook error: {e}")
+        return 'error', 500
+
+def run_flask():
+    """Run Flask server in a separate thread"""
+    port = int(os.environ.get('PORT', 10000))
+    flask_app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
 
 # ================================
 # Stock Analyzer
@@ -100,130 +164,155 @@ bot_application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 user_last = {}
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Start command handler"""
     await update.message.reply_text(
-        "👋 হ্যালো! বট চালু আছে।\nস্টক সিম্বল পাঠান যেমন `AAPL` বিশ্লেষণের জন্য।"
+        "👋 হ্যালো! বট চালু আছে।\n"
+        "স্টক সিম্বল পাঠান যেমন `AAPL` বিশ্লেষণের জন্য।\n\n"
+        "উদাহরণ: `AAPL`, `GOOGL`, `TSLA`"
+    )
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Help command handler"""
+    await update.message.reply_text(
+        "📚 **সাহায্য গাইড**\n\n"
+        "**কিভাবে ব্যবহার করবেন:**\n"
+        "1. স্টক সিম্বল পাঠান (যেমন: AAPL)\n"
+        "2. বট ডাটা বিশ্লেষণ করবে\n"
+        "3. বিস্তারিত বিশ্লেষণ দেখাবে\n\n"
+        "**উপলব্ধ কমান্ড:**\n"
+        "/start - বট চালু করুন\n"
+        "/help - সাহায্য দেখুন\n"
+        "/about - বট সম্পর্কে জানুন\n\n"
+        "**সাপোর্টেড স্টক:**\n"
+        "যেকোনো স্টক সিম্বল সাপোর্ট করে যা ডাটাসেটে আছে।",
+        parse_mode='Markdown'
+    )
+
+async def about_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """About command handler"""
+    await update.message.reply_text(
+        "🤖 **স্টক অ্যানালাইসিস বট**\n\n"
+        "এই বটটি AI ব্যবহার করে স্টক মার্কেট বিশ্লেষণ করে।\n\n"
+        "**ফিচারসমূহ:**\n"
+        "• জেমিনি AI দ্বারা বিশ্লেষণ\n"
+        "• রিয়েল-টাইম ডাটা প্রসেসিং\n"
+        "• বিস্তারিত স্টক অ্যানালাইসিস\n"
+        "• বাংলা ভাষায় রিপোর্ট\n\n"
+        "**ক্রেডিট:**\n"
+        "পাওয়ার্ড বাই: জেমিনি 2.0 ফ্ল্যাশ\n"
+        "ডাটা সোর্স: Hugging Face Datasets",
+        parse_mode='Markdown'
     )
 
 async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle text messages"""
     text = update.message.text.strip().upper()
     user_id = update.effective_user.id
 
+    # Flood control
     now = asyncio.get_event_loop().time()
     if user_id in user_last and now - user_last[user_id] < 5:
         await update.message.reply_text("⏳ একটু অপেক্ষা করুন...")
         return
     user_last[user_id] = now
 
-    msg = await update.message.reply_text("⏳ প্রসেসিং হচ্ছে...")
+    # Send processing message
+    msg = await update.message.reply_text("⏳ ডাটা সংগ্রহ করা হচ্ছে...")
+    
+    # Get stock data
     df = await analyzer.get_stock_data(text)
     if df is None or df.empty:
-        await msg.edit_text("❌ ডাটা পাওয়া যায়নি")
+        await msg.edit_text(
+            f"❌ `{text}` সিম্বলের জন্য ডাটা পাওয়া যায়নি।\n\n"
+            "দয়া করে সঠিক স্টক সিম্বল ব্যবহার করুন।",
+            parse_mode='Markdown'
+        )
         return
 
+    # Update message
+    await msg.edit_text("🤖 AI বিশ্লেষণ করা হচ্ছে...")
+    
     try:
         result = await analyzer.analyze(text, df)
-        await msg.edit_text(result[:4000])
-    except Exception:
-        await msg.edit_text("❌ ত্রুটি হয়েছে")
+        # Split long messages if needed
+        if len(result) > 4096:
+            for i in range(0, len(result), 4096):
+                await msg.edit_text(result[i:i+4096])
+                if i == 0:
+                    msg = await update.message.reply_text("📊 **বাকি বিশ্লেষণ:**")
+        else:
+            await msg.edit_text(result[:4000])
+    except Exception as e:
+        logger.error(f"Analysis error: {e}")
+        await msg.edit_text("❌ বিশ্লেষণ করতে সমস্যা হয়েছে। পরে আবার চেষ্টা করুন।")
 
+# Add handlers
 bot_application.add_handler(CommandHandler("start", start))
+bot_application.add_handler(CommandHandler("help", help_command))
+bot_application.add_handler(CommandHandler("about", about_command))
 bot_application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
 
 # ================================
-# ASGI App (Hypercorn compatible)
+# Main function with webhook setup
 # ================================
-from hypercorn.config import Config
-from hypercorn.asyncio import serve
-
-async def app(scope, receive, send):
-    """ASGI app that handles both webhook and health checks"""
-    
-    if scope["type"] == "http":
-        path = scope["path"]
-        method = scope["method"]
-        
-        # Health check endpoint
-        if path == "/" and method == "GET":
-            await send({
-                "type": "http.response.start",
-                "status": 200,
-                "headers": [(b"content-type", b"application/json")],
-            })
-            body = f'{{"status": "ok", "time": "{datetime.now().isoformat()}"}}'.encode()
-            await send({
-                "type": "http.response.body",
-                "body": body,
-            })
-            return
-        
-        # Webhook endpoint
-        elif path == "/webhook" and method == "POST":
-            # Read request body
-            body = b""
-            more_body = True
-            while more_body:
-                message = await receive()
-                if message["type"] == "http.request":
-                    body += message.get("body", b"")
-                    more_body = message.get("more_body", False)
+async def setup_webhook():
+    """Set up the webhook for Telegram"""
+    if RENDER_URL:
+        webhook_url = f"{RENDER_URL}/webhook"
+        try:
+            await bot_application.bot.set_webhook(webhook_url)
+            logger.info(f"✅ Webhook set to {webhook_url}")
             
-            try:
-                import json
-                data = json.loads(body)
-                update = Update.de_json(data, bot_application.bot)
-                await bot_application.update_queue.put(update)
-                
-                await send({
-                    "type": "http.response.start",
-                    "status": 200,
-                    "headers": [(b"content-type", b"text/plain")],
-                })
-                await send({
-                    "type": "http.response.body",
-                    "body": b"ok",
-                })
-            except Exception as e:
-                logger.error(f"Webhook error: {e}")
-                await send({
-                    "type": "http.response.start",
-                    "status": 500,
-                    "headers": [(b"content-type", b"text/plain")],
-                })
-                await send({
-                    "type": "http.response.body",
-                    "body": b"error",
-                })
-            return
-        
-        # 404
-        else:
-            await send({
-                "type": "http.response.start",
-                "status": 404,
-                "headers": [(b"content-type", b"text/plain")],
-            })
-            await send({
-                "type": "http.response.body",
-                "body": b"Not found",
-            })
-            return
+            # Verify webhook
+            webhook_info = await bot_application.bot.get_webhook_info()
+            logger.info(f"Webhook info: {webhook_info.url}")
+        except Exception as e:
+            logger.error(f"Failed to set webhook: {e}")
+    else:
+        logger.warning("RENDER_EXTERNAL_URL not set, webhook not configured")
 
-# ================================
-# Main
-# ================================
-async def main():
-    """Main function to start the server"""
-    # Set webhook
-    webhook_url = f"{RENDER_URL}/webhook"
-    await bot_application.bot.set_webhook(webhook_url)
-    print(f"✅ Webhook set to {webhook_url}")
-    print(f"🚀 Server starting on port {os.environ.get('PORT', 10000)}")
+async def run_bot():
+    """Run the bot with polling (for local development)"""
+    logger.info("🤖 Starting bot with polling...")
+    await bot_application.initialize()
+    await bot_application.start()
+    await bot_application.updater.start_polling()
     
-    # Start the ASGI server
-    config = Config()
-    port = int(os.environ.get("PORT", 10000))
-    config.bind = [f"0.0.0.0:{port}"]
-    await serve(app, config)
+    # Keep running
+    while True:
+        await asyncio.sleep(1)
+
+async def main():
+    """Main function to run both Flask and bot"""
+    logger.info("🚀 Starting Stock Analysis Bot...")
+    
+    # Start Flask server in separate thread
+    flask_thread = threading.Thread(target=run_flask, daemon=True)
+    flask_thread.start()
+    logger.info(f"🌐 Flask server started on port {os.environ.get('PORT', 10000)}")
+    
+    # Setup webhook if running on Render
+    if RENDER_URL:
+        logger.info("📡 Running on Render, setting up webhook...")
+        await setup_webhook()
+        
+        # Start the bot application with webhook
+        await bot_application.initialize()
+        await bot_application.start()
+        
+        # Keep the bot running
+        logger.info("✅ Bot is running with webhook mode")
+        while True:
+            await asyncio.sleep(1)
+    else:
+        # Local development - use polling
+        logger.info("💻 Local development mode, using polling...")
+        await run_bot()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("🛑 Bot stopped by user")
+    except Exception as e:
+        logger.error(f"Fatal error: {e}")
