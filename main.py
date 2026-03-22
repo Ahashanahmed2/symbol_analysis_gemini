@@ -4,6 +4,7 @@ import logging
 import tempfile
 import traceback
 from datetime import datetime
+from threading import Thread
 
 import pandas as pd
 from flask import Flask, request, jsonify
@@ -25,13 +26,35 @@ HF_TOKEN = os.getenv("HF_TOKEN")
 RENDER_URL = os.getenv("RENDER_EXTERNAL_URL")
 
 # ================================
-# Flask app (health check)
+# Flask app
 # ================================
 app = Flask(__name__)
 
 @app.route("/")
 def health():
     return jsonify({"status": "ok", "time": datetime.now().isoformat()})
+
+@app.route("/webhook", methods=["POST"])
+def webhook():
+    """Telegram webhook endpoint"""
+    try:
+        data = request.get_json()
+        if not data:
+            return "No data", 400
+        
+        # Update process করার জন্য আলাদা থ্রেড
+        def process_update():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            update = Update.de_json(data, bot_application.bot)
+            loop.run_until_complete(bot_application.update_queue.put(update))
+            loop.close()
+        
+        Thread(target=process_update).start()
+        return "ok", 200
+    except Exception as e:
+        logger.error(f"Webhook error: {e}")
+        return "error", 500
 
 # ================================
 # Stock Analyzer
@@ -107,12 +130,12 @@ class StockAnalyzer:
 # Telegram Bot
 # ================================
 analyzer = StockAnalyzer()
-application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
-user_last = {}  # flood control
+bot_application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+user_last = {}
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "👋 Hello! Bot is running.\nSend a stock symbol like `AAPL` to analyze."
+        "👋 হ্যালো! বট চালু আছে।\nস্টক সিম্বল পাঠান যেমন `AAPL` বিশ্লেষণের জন্য।"
     )
 
 async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -122,52 +145,45 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Flood control
     now = asyncio.get_event_loop().time()
     if user_id in user_last and now - user_last[user_id] < 5:
-        await update.message.reply_text("⏳ অপেক্ষা করুন...")
+        await update.message.reply_text("⏳ একটু অপেক্ষা করুন...")
         return
     user_last[user_id] = now
 
-    msg = await update.message.reply_text("⏳ Processing...")
+    msg = await update.message.reply_text("⏳ প্রসেসিং হচ্ছে...")
     df = await analyzer.get_stock_data(text)
     if df is None or df.empty:
-        await msg.edit_text("❌ Data পাওয়া যায়নি")
+        await msg.edit_text("❌ ডাটা পাওয়া যায়নি")
         return
 
     try:
         result = await analyzer.analyze(text, df)
         await msg.edit_text(result[:4000])
     except Exception:
-        await msg.edit_text("❌ Error হয়েছে")
+        await msg.edit_text("❌ ত্রুটি হয়েছে")
 
-application.add_handler(CommandHandler("start", start))
-application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
-
-# ================================
-# Webhook endpoint
-# ================================
-@app.route("/webhook", methods=["POST"])
-async def webhook():
-    data = request.get_json()
-    update = Update.de_json(data, application.bot)
-    await application.update_queue.put(update)
-    return "ok"
+bot_application.add_handler(CommandHandler("start", start))
+bot_application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
 
 # ================================
-# Main async startup
+# Webhook setup and main
 # ================================
+async def setup_webhook():
+    """Set up the webhook"""
+    webhook_url = f"{RENDER_URL}/webhook"
+    await bot_application.bot.set_webhook(webhook_url)
+    print(f"✅ Webhook set to {webhook_url}")
+
+def run_flask():
+    """Run Flask app"""
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port, debug=False)
+
 if __name__ == "__main__":
-    import hypercorn.asyncio
-    from hypercorn.config import Config
-
-    async def main():
-        # Set Telegram webhook
-        webhook_url = f"{RENDER_URL}/webhook"
-        await application.bot.set_webhook(webhook_url)
-        print(f"✅ Webhook set to {webhook_url}")
-
-        # Serve Flask app asynchronously
-        config = Config()
-        port = int(os.environ.get("PORT", 10000))
-        config.bind = [f"0.0.0.0:{port}"]
-        await hypercorn.asyncio.serve(app, config)
-
-    asyncio.run(main())
+    # Webhook setup
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(setup_webhook())
+    
+    # Flask চালান (WSGI server দিয়ে)
+    print(f"🚀 Starting Flask server on port {os.environ.get('PORT', 10000)}")
+    run_flask()
