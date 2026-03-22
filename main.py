@@ -1,16 +1,18 @@
 import os
 import logging
+import time
 import asyncio
+import threading
 from datetime import datetime
 from dotenv import load_dotenv
+from flask import Flask, jsonify, request
+from telegram import Update, Bot
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+import pandas as pd
 from google import genai
 from google.genai import types
-from telegram import Bot
-from telegram.ext import Application, ContextTypes
-from flask import Flask, request, jsonify
-import pandas as pd
+from huggingface_hub import HfApi, hf_hub_download
 import tempfile
-from huggingface_hub import hf_hub_download, HfApi
 import traceback
 
 # ================================
@@ -21,136 +23,157 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+RENDER_URL = os.getenv("RENDER_EXTERNAL_URL")
 GEMINI_API_TOKEN = os.getenv("GEMINI_API_TOKEN")
 HF_TOKEN = os.getenv("HF_TOKEN")
-RENDER_URL = os.getenv("RENDER_EXTERNAL_URL")
+HF_REPO_ID = "ahashanahmed/csv"
 
 # ================================
-# Flask App
+# Flask (Health & Webhook)
 # ================================
 app = Flask(__name__)
 
-@app.route("/")
+@app.route('/')
 def health():
     return jsonify({"status": "ok", "time": datetime.now().isoformat()})
+
+# Telegram webhook endpoint
+@app.route('/webhook', methods=['POST'])
+async def webhook():
+    data = request.get_json()
+    update = Update.de_json(data, bot)
+    await application.update_queue.put(update)
+    return "ok"
+
+# ================================
+# HF Fallback
+# ================================
+class HFHandler:
+    def __init__(self, repo_id, token):
+        self.repo_id = repo_id
+        self.token = token
+        self.api = HfApi()
+
+    def get_symbol_latest_rows(self, symbol, rows=400):
+        try:
+            files = self.api.list_repo_files(repo_id=self.repo_id, repo_type="dataset", token=self.token)
+            csv_file = next((f for f in files if f.endswith(".csv")), None)
+            if not csv_file:
+                return None
+
+            with tempfile.TemporaryDirectory() as temp:
+                path = hf_hub_download(repo_id=self.repo_id, filename=csv_file, repo_type="dataset",
+                                       token=self.token, local_dir=temp)
+                df = pd.read_csv(path)
+                col = next((c for c in df.columns if c.lower() in ["symbol","ticker"]), None)
+                if not col:
+                    return None
+                df = df[df[col].astype(str).str.upper() == symbol.upper()]
+                return df.tail(rows)
+        except:
+            return None
 
 # ================================
 # Stock Analyzer
 # ================================
 class StockAnalyzer:
     def __init__(self):
-        self.gemini_key = GEMINI_API_TOKEN
-        self.hf_token = HF_TOKEN
-        self.repo_id = "ahashanahmed/csv"
-        self.gemini_model = "gemini-2.0-flash-exp"
-        self.min_request_interval = 2
+        self.gemini_client = genai.Client(api_key=GEMINI_API_TOKEN) if GEMINI_API_TOKEN else None
+        self.hf_handler = HFHandler(HF_REPO_ID, HF_TOKEN) if HF_TOKEN else None
         self.global_request_times = []
         self.last_request_time = 0
-        self.gemini_client = genai.Client(api_key=self.gemini_key) if self.gemini_key else None
-        self.hf_handler = self._fallback() if self.hf_token else None
+        self.min_request_interval = 4
+        self.max_requests_per_minute = 15
 
-    def _fallback(self):
-        class Fallback:
-            def __init__(self, repo_id, token):
-                self.repo_id = repo_id
-                self.token = token
-                self.api = HfApi()
+    def _check_rate_limit(self):
+        now = time.time()
+        self.global_request_times = [t for t in self.global_request_times if now - t < 60]
+        if len(self.global_request_times) >= self.max_requests_per_minute:
+            return False, "⚠️ Rate limit exceeded. Try later."
+        return True, None
 
-            def get_symbol_latest_rows(self, symbol, rows=400):
-                try:
-                    files = self.api.list_repo_files(repo_id=self.repo_id, repo_type="dataset", token=self.token)
-                    csv_file = next((f for f in files if f.endswith(".csv")), None)
-                    if not csv_file:
-                        return None
-                    with tempfile.TemporaryDirectory() as temp:
-                        path = hf_hub_download(
-                            repo_id=self.repo_id,
-                            filename=csv_file,
-                            repo_type="dataset",
-                            token=self.token,
-                            local_dir=temp
-                        )
-                        df = pd.read_csv(path)
-                        col = next((c for c in df.columns if c.lower() in ["symbol","ticker"]), None)
-                        if not col:
-                            return None
-                        df = df[df[col].astype(str).str.upper() == symbol.upper()]
-                        return df.tail(rows)
-                except:
-                    return None
-        return Fallback(self.repo_id, self.hf_token)
+    def _record_request(self):
+        self.global_request_times.append(time.time())
 
-    async def analyze(self, symbol: str, df: pd.DataFrame):
+    def get_stock_data(self, symbol):
+        if not self.hf_handler:
+            return None
+        return self.hf_handler.get_symbol_latest_rows(symbol, 400)
+
+    def analyze(self, symbol, df):
         if not self.gemini_client or df is None:
             return "⚠️ Data/API error"
-        # Rate limit
-        now = asyncio.get_event_loop().time()
-        wait = max(0, self.min_request_interval - (now - self.last_request_time))
+
+        ok, msg = self._check_rate_limit()
+        if not ok:
+            return msg
+
+        wait = self.min_request_interval - (time.time() - self.last_request_time)
         if wait > 0:
-            await asyncio.sleep(wait)
+            time.sleep(wait)
+
         try:
             df_tail = df.tail(200)
             csv_text = df_tail.to_csv(index=False)
-            prompt = f"""📊 {symbol} স্টক অ্যানালাইসিস
+
+            prompt = f"""📊 **{symbol} স্টক অ্যানালাইসিস**
 
 ডাটা: {len(df_tail)} রো CSV ফরম্যাটে
 
 {csv_text}
 
-সংক্ষিপ্ত প্রফেশনাল টেকনিক্যাল অ্যানালাইসিস:"""
-            self.last_request_time = asyncio.get_event_loop().time()
+... (FULL TECHNICAL ANALYSIS PROMPT) ...
+"""
+            self.last_request_time = time.time()
+            self._record_request()
+
             res = self.gemini_client.models.generate_content(
-                model=self.gemini_model,
+                model="gemini-2.0-flash-exp",
                 contents=prompt,
                 config=types.GenerateContentConfig(max_output_tokens=4500, temperature=0.7)
             )
             return res.text if res else "⚠️ No response"
+
         except:
             logger.error(traceback.format_exc())
             return "⚠️ Server error"
 
-    def get_stock_data(self, symbol: str):
-        if not self.hf_handler:
-            return None
-        return self.hf_handler.get_symbol_latest_rows(symbol, 400)
-
 # ================================
-# Telegram Webhook
+# Telegram Bot
 # ================================
-analyzer = StockAnalyzer()
 bot = Bot(token=TELEGRAM_BOT_TOKEN)
+application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+analyzer = StockAnalyzer()
+user_last = {}
 
-@app.route("/webhook", methods=["POST"])
-async def webhook():
+async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip()
+    user_id = update.effective_user.id
+    now = time.time()
+    if user_id in user_last and now - user_last[user_id] < 5:
+        return await update.message.reply_text("⏳ অপেক্ষা করুন...")
+
+    user_last[user_id] = now
+    msg = await update.message.reply_text("⏳ Processing...")
+
     try:
-        data = request.get_json()
-        if "message" not in data:
-            return jsonify({"ok": True})
-
-        chat_id = data["message"]["chat"]["id"]
-        text = data["message"].get("text")
-        if not text:
-            await bot.send_message(chat_id, "❌ শুধু text message পাঠান।")
-            return jsonify({"ok": True})
-
         df = analyzer.get_stock_data(text.upper())
         if df is None:
-            await bot.send_message(chat_id, "❌ Data পাওয়া যায়নি")
-            return jsonify({"ok": True})
+            return await msg.edit_text("❌ Data পাওয়া যায়নি")
 
-        result = await analyzer.analyze(text.upper(), df)
-        await bot.send_message(chat_id, result[:4000])
-        return jsonify({"ok": True})
-    except Exception as e:
-        logger.error(traceback.format_exc())
-        return jsonify({"ok": False, "error": str(e)})
+        result = await asyncio.get_event_loop().run_in_executor(None, analyzer.analyze, text.upper(), df)
+        await msg.edit_text(result[:4000])
+    except:
+        await msg.edit_text("❌ Error হয়েছে")
+
+application.add_handler(MessageHandler(filters.TEXT, handle))
 
 # ================================
-# Set webhook on startup
+# Webhook setup
 # ================================
-def set_telegram_webhook():
+async def set_telegram_webhook():
     url = f"{RENDER_URL}/webhook"
-    success = bot.set_webhook(url)
+    success = await bot.set_webhook(url)
     if success:
         logger.info(f"✅ Webhook set to {url}")
     else:
@@ -160,6 +183,20 @@ def set_telegram_webhook():
 # MAIN
 # ================================
 if __name__ == "__main__":
-    set_telegram_webhook()
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port, threaded=True)
+    # Flask thread
+    threading.Thread(target=lambda: app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)), threaded=True), daemon=True).start()
+    
+    # Bot thread
+    def run_bot():
+        asyncio.run(set_telegram_webhook())
+        asyncio.run(application.initialize())
+        asyncio.run(application.start())
+        print("✅ Telegram Bot running")
+        asyncio.run(application.updater.start_polling())  # fallback if webhook fails
+        asyncio.run(asyncio.Event().wait())  # keep alive
+
+    threading.Thread(target=run_bot, daemon=True).start()
+
+    print("✅ Flask + Bot running")
+    while True:
+        time.sleep(60)
