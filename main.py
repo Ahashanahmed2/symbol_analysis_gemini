@@ -243,7 +243,7 @@ Keep the analysis concise but informative. Use emojis and bullet points.
                     asyncio.get_event_loop().run_in_executor(
                         None,
                         lambda: self.gemini_client.models.generate_content(
-                            model="gemini-2.0-flash-exp",
+                            model="gemini-2.0-flash-lite",
                             contents=prompt,
                             config=types.GenerateContentConfig(
                                 max_output_tokens=3000,
@@ -308,7 +308,7 @@ async def test_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             test_response = await asyncio.get_event_loop().run_in_executor(
                 None,
                 lambda: analyzer.gemini_client.models.generate_content(
-                    model="gemini-1.5-pro",
+                    model="gemini-2.0-flash-lite",
                     contents="Say 'API working'",
                     config=types.GenerateContentConfig(max_output_tokens=10)
                 )
@@ -363,7 +363,7 @@ async def about_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 **ক্রেডিট:**
 • Data Source: Hugging Face
-• AI Model: Gemini 2.0 Flash
+• AI Model: gemini-2.0-flash-lite
 • Hosting: Render.com
 """
     await update.message.reply_text(text, parse_mode='Markdown')
