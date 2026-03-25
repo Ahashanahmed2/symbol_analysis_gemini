@@ -2,7 +2,6 @@ python-telegram-bot==20.7
 google-genai
 pandas
 requests
-flask
 python-dotenv
 huggingface_hub
 hypercorn==0.18.0
