@@ -590,7 +590,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 5. 🤖 AI টুলে ফাইল আপলোড করে বিশ্লেষণ করান
 
 **AI টুলে ব্যবহারের সময় বলুন:**
-"এই ডাটা এবং প্রম্পট অনুযায়ী সম্পূর্ণ টেকনিক্যাল অ্যানালাইসিস করুন। উত্তর বাংলায় দিন。"
+"এই ডাটা এবং প্রম্পট অনুযায়ী সম্পূর্ণ টেকনিক্যাল অ্যানালাইসিস করুন। উত্তর বাংলায় দিন।"
 
 **কমান্ডসমূহ:**
 /start - বট চালু করুন
@@ -724,3 +724,267 @@ async def comment_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 [📄 comment.txt]({download_url})
 
 📄 **ফাইলের কন্টেন্ট:**
+symbol,এলিয়ট ওয়েব,sub-ওয়েব,এন্ট্রি জোন (টাকা),স্টপ লস (টাকা),টেক প্রফিট ১ (টাকা),টেক প্রফিট ২ (টাকা),টেক প্রফিট ৩ (টাকা),RRR,স্কোর (%),কুইক ইনসাইট
+কলামগুলো থাকবে csv ফাইলে
+
+
+⏰ লিংক ৩০ মিনিটের জন্য সক্রিয় থাকবে।"""
+        
+        await msg.edit_text(response, parse_mode='Markdown', disable_web_page_preview=False)
+        
+        # Auto-delete after 30 minutes
+        async def delete_file():
+            await asyncio.sleep(1800)
+            if file_id in generated_files:
+                del generated_files[file_id]
+        
+        asyncio.create_task(delete_file())
+        
+    except Exception as e:
+        logger.error(f"comment.txt ফাইল তৈরি করতে ত্রুটি: {traceback.format_exc()}")
+        await msg.edit_text(
+            f"❌ comment.txt ফাইল তৈরি করতে সমস্যা!\n\nত্রুটি: {str(e)[:200]}",
+            parse_mode='Markdown'
+        )
+
+async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    symbol = update.message.text.strip().upper()
+    user_id = update.effective_user.id
+
+    now = asyncio.get_event_loop().time()
+    if user_id in user_last and now - user_last[user_id] < 5:
+        await update.message.reply_text("⏳ একটু অপেক্ষা করুন...")
+        return
+    user_last[user_id] = now
+
+    # প্রথমে সিম্বল লিস্ট লোড করুন
+    if not fetcher.all_symbols:
+        await fetcher.load_all_symbols()
+
+    similar = fetcher.find_similar_symbols(symbol)
+
+    if similar and similar[0] != symbol:
+        keyboard = []
+        for s in similar[:10]:
+            keyboard.append([InlineKeyboardButton(s, callback_data=f"select_{s}")])
+        keyboard.append([InlineKeyboardButton("❌ বাতিল", callback_data="cancel")])
+
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        await update.message.reply_text(
+            f"🔍 **'{symbol}'** সিম্বলটি পাওয়া যায়নি।\n\n"
+            f"আপনি কি এইগুলোর মধ্যে একটি বোঝাতে চেয়েছেন?\n\n"
+            f"💡 সম্পূর্ণ লিস্ট দেখতে /symbols ব্যবহার করুন।",
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
+        )
+        return
+
+    await process_symbol(update, symbol)
+
+async def process_symbol(update: Update, symbol: str, is_callback=False):
+    if is_callback:
+        query = update.callback_query
+        await query.answer()
+        msg = await query.edit_message_text(
+            f"🔍 **{symbol}** ডাটা সংগ্রহ করা হচ্ছে...\n\n⏳ ১০-২০ সেকেন্ড সময় লাগতে পারে...",
+            parse_mode='Markdown'
+        )
+        user_id = query.from_user.id
+    else:
+        msg = await update.message.reply_text(
+            f"🔍 **{symbol}** ডাটা সংগ্রহ করা হচ্ছে...\n\n⏳ ১০-২০ সেকেন্ড সময় লাগতে পারে...",
+            parse_mode='Markdown'
+        )
+        user_id = update.effective_user.id
+
+    try:
+        df, total_rows = await fetcher.get_stock_data(symbol, rows=400)
+
+        if df is None or df.empty:
+            await msg.edit_text(
+                f"❌ **{symbol}** সিম্বলের জন্য কোন ডাটা পাওয়া যায়নি!\n\n"
+                "📋 সম্পূর্ণ সিম্বল লিস্ট দেখতে /symbols কমান্ড ব্যবহার করুন।",
+                parse_mode='Markdown'
+            )
+            return
+
+        await msg.edit_text(
+            f"📊 **{symbol}**\n\n"
+            f"✅ ডাটা সংগ্রহ সম্পূর্ণ!\n"
+            f"📈 মোট রো: {total_rows}টি\n"
+            f"📋 ব্যবহৃত: {len(df)}টি সর্বশেষ রো\n"
+            f"📝 ফাইল তৈরি হচ্ছে...",
+            parse_mode='Markdown'
+        )
+
+        file_content = fetcher.create_full_file(symbol, df, total_rows)
+
+        if not file_content:
+            await msg.edit_text(f"❌ **{symbol}** ফাইল তৈরি করতে সমস্যা!", parse_mode='Markdown')
+            return
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"{symbol}_analysis_{timestamp}.txt"
+
+        file_id = f"{user_id}_{symbol}_{timestamp}"
+        generated_files[file_id] = {
+            'content': file_content,
+            'filename': filename,
+            'symbol': symbol
+        }
+
+        if RENDER_URL:
+            download_url = f"{RENDER_URL}/download/{file_id}"
+        else:
+            download_url = f"http://localhost:10000/download/{file_id}"
+
+        price_col = None
+        for col in ['close', 'Close', 'price', 'Price', 'last', 'Last']:
+            if col in df.columns:
+                price_col = col
+                break
+
+        current_price = df[price_col].iloc[-1] if price_col and len(df) > 0 else 'N/A'
+
+        response = f"""✅ **{symbol}** ফাইল তৈরি সম্পূর্ণ!
+
+📊 **ডাটা সারাংশ:**
+• সিম্বল: {symbol}
+• বর্তমান মূল্য: {current_price}
+• মোট রেকর্ড: {len(df)}টি সর্বশেষ ডাটা
+• কলাম সংখ্যা: {len(df.columns)}টি
+• তৈরি করা হয়েছে: {datetime.now().strftime('%d %B, %Y - %I:%M %p')}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📥 **ডাউনলোড লিংক:**
+[📄 {symbol}_analysis.txt]({download_url})
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🤖 **AI টুলে ব্যবহার করুন:**
+
+ফাইলটি আপনার পছন্দের AI টুলে আপলোড করে বলুন:
+
+**"এই ডাটা এবং প্রম্পট অনুযায়ী সম্পূর্ণ টেকনিক্যাল অ্যানালাইসিস করুন। উত্তর বাংলা ভাষায় দিন।"**
+
+• [✨ Gemini AI](https://gemini.google.com)
+• [⚡ Groq](https://groq.com)
+• [💬 ChatGPT](https://chat.openai.com)
+• [🧠 Claude](https://claude.ai)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📄 **ফাইলে যা থাকছে (সম্পূর্ণ):**
+✅ সম্পূর্ণ ডাটা ({len(df)}টি রো, {len(df.columns)}টি কলাম)
+✅ এলিয়ট ওয়েভ সম্পূর্ণ লাইব্রেরি
+✅ SMC সম্পূর্ণ লাইব্রেরি
+✅ প্রাইস অ্যাকশন সম্পূর্ণ লাইব্রেরি
+✅ চার্ট প্যাটার্ন সম্পূর্ণ লাইব্রেরি
+✅ ফিবোনাচ্চি অ্যানালাইসিস
+✅ RSI/MACD/OBV ডাইভারজেন্স সম্পূর্ণ লাইব্রেরি
+✅ ট্রেডিং প্ল্যান টেমপ্লেট
+✅ রিস্ক ম্যানেজমেন্ট ফ্রেমওয়ার্ক
+✅ **বাংলায় উত্তর দেওয়ার নির্দেশনা**
+
+⏰ লিংক ৩০ মিনিটের জন্য সক্রিয় থাকবে।
+"""
+
+        await msg.edit_text(response, parse_mode='Markdown', disable_web_page_preview=False)
+
+        async def delete_file():
+            await asyncio.sleep(1800)
+            if file_id in generated_files:
+                del generated_files[file_id]
+
+        asyncio.create_task(delete_file())
+
+    except Exception as e:
+        logger.error(f"ত্রুটি: {traceback.format_exc()}")
+        await msg.edit_text(
+            f"❌ **{symbol}** প্রক্রিয়াকরণে সমস্যা!\n\nত্রুটি: {str(e)[:200]}",
+            parse_mode='Markdown'
+        )
+
+async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    data = query.data
+
+    if data == "cancel":
+        await query.answer()
+        await query.edit_message_text("❌ বাতিল করা হয়েছে।")
+        return
+
+    if data.startswith("select_"):
+        symbol = data.replace("select_", "")
+        await process_symbol(update, symbol, is_callback=True)
+
+@flask_app.route('/download/<file_id>')
+def download_file(file_id):
+    if file_id not in generated_files:
+        return jsonify({'error': 'ফাইল পাওয়া যায়নি বা মেয়াদ উত্তীর্ণ হয়েছে'}), 404
+
+    file_data = generated_files[file_id]
+    content = file_data['content']
+    filename = file_data['filename']
+
+    file_stream = io.BytesIO(content.encode('utf-8-sig'))
+    file_stream.seek(0)
+
+    return send_file(
+        file_stream,
+        as_attachment=True,
+        download_name=filename,
+        mimetype='text/plain; charset=utf-8'
+    )
+
+# Add handlers
+bot_application.add_handler(CommandHandler("start", start))
+bot_application.add_handler(CommandHandler("help", help_command))
+bot_application.add_handler(CommandHandler("about", about_command))
+bot_application.add_handler(CommandHandler("symbols", symbols_command))
+bot_application.add_handler(CommandHandler("comment", comment_command))
+bot_application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
+bot_application.add_handler(CallbackQueryHandler(handle_callback))
+
+# ================================
+# মেইন
+# ================================
+async def setup_webhook():
+    if RENDER_URL:
+        webhook_url = f"{RENDER_URL}/webhook"
+        try:
+            await bot_application.bot.set_webhook(webhook_url)
+            logger.info(f"✅ ওয়েবহুক সেট করা হয়েছে: {webhook_url}")
+        except Exception as e:
+            logger.error(f"ওয়েবহুক সেট করতে ব্যর্থ: {e}")
+
+async def main():
+    logger.info("🚀 স্টক টেকনিক্যাল অ্যানালাইসিস বট চালু হচ্ছে...")
+
+    flask_thread = threading.Thread(target=run_flask, daemon=True)
+    flask_thread.start()
+
+    if not TELEGRAM_BOT_TOKEN:
+        logger.error("❌ TELEGRAM_BOT_TOKEN সেট করা নেই!")
+    if not HF_TOKEN:
+        logger.warning("⚠️ HF_TOKEN সেট করা নেই!")
+
+    if RENDER_URL:
+        await setup_webhook()
+        await bot_application.initialize()
+        await bot_application.start()
+        logger.info("✅ বট ওয়েবহুক মোডে চালু আছে")
+        while True:
+            await asyncio.sleep(1)
+    else:
+        await bot_application.initialize()
+        await bot_application.start()
+        await bot_application.updater.start_polling()
+        logger.info("✅ বট পোলিং মোডে চালু আছে")
+        while True:
+            await asyncio.sleep(1)
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("🛑 বট বন্ধ করা হয়েছে")
