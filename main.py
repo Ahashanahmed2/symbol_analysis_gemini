@@ -87,31 +87,31 @@ class StockDataFetcher:
     def _find_symbol_column(self, df):
         possible_columns = ['symbol', 'Symbol', 'SYMBOL', 'ticker', 'Ticker', 
                            'stock', 'Stock', 'name', 'Name', 'code', 'Code']
-        
+
         for col in possible_columns:
             if col in df.columns:
                 return col
-        
+
         for col in df.columns:
             if df[col].dtype == 'object':
                 sample = df[col].dropna().astype(str).head(10)
                 if all(2 <= len(str(x)) <= 15 for x in sample):
                     return col
-        
+
         return df.columns[0] if len(df.columns) > 0 else None
 
     def _find_date_column(self, df):
         possible_columns = ['date', 'Date', 'DATE', 'datetime', 'DateTime', 
                            'timestamp', 'Timestamp', 'time', 'Time']
-        
+
         for col in possible_columns:
             if col in df.columns:
                 return col
-        
+
         for col in df.columns:
             if 'date' in col.lower() or 'time' in col.lower():
                 return col
-        
+
         return None
 
     async def load_all_symbols(self):
@@ -130,19 +130,19 @@ class StockDataFetcher:
                     local_dir=temp,
                     local_dir_use_symlinks=False
                 )
-                
+
                 self.df_cache = pd.read_csv(path, encoding='utf-8-sig')
                 logger.info(f"মোট {len(self.df_cache)}টি রো লোড করা হয়েছে")
-                
+
                 symbol_col = self._find_symbol_column(self.df_cache)
                 if symbol_col:
                     symbols = self.df_cache[symbol_col].astype(str).str.strip().str.upper().unique()
                     symbols = [s for s in symbols if s and s != 'nan' and len(s) > 0]
                     self.all_symbols = sorted(symbols)
                     logger.info(f"মোট {len(self.all_symbols)}টি সিম্বল পাওয়া গেছে")
-                
+
                 return self.all_symbols
-                
+
         except Exception as e:
             logger.error(f"সিম্বল লোড করতে সমস্যা: {traceback.format_exc()}")
             return []
@@ -151,26 +151,26 @@ class StockDataFetcher:
         """query এর সাথে মিলে এমন সিম্বল খুঁজে বের করে"""
         if not self.all_symbols:
             return []
-        
+
         query_upper = query.upper()
-        
+
         exact_matches = [s for s in self.all_symbols if s == query_upper]
         if exact_matches:
             return exact_matches[:limit]
-        
+
         partial_matches = [s for s in self.all_symbols if query_upper in s]
-        
+
         fuzzy_matches = difflib.get_close_matches(query_upper, self.all_symbols, n=limit, cutoff=0.6)
-        
+
         all_matches = list(dict.fromkeys(partial_matches + fuzzy_matches))
-        
+
         return all_matches[:limit]
 
     async def get_stock_data(self, symbol: str, rows=400):
         """সিম্বল অনুযায়ী ডাটা ফিল্টার করুন"""
         try:
             logger.info(f"{symbol} এর জন্য ডাটা সংগ্রহ করা হচ্ছে...")
-            
+
             if self.df_cache is None:
                 with tempfile.TemporaryDirectory() as temp:
                     path = hf_hub_download(
@@ -182,25 +182,25 @@ class StockDataFetcher:
                         local_dir_use_symlinks=False
                     )
                     self.df_cache = pd.read_csv(path, encoding='utf-8-sig')
-            
+
             symbol_col = self._find_symbol_column(self.df_cache)
             if not symbol_col:
                 logger.error("কোন সিম্বল কলাম পাওয়া যায়নি!")
                 return None, 0
-            
+
             # সিম্বল কলাম আপারকেসে কনভার্ট করুন
             self.df_cache[symbol_col] = self.df_cache[symbol_col].astype(str).str.strip().str.upper()
-            
+
             # ফিল্টার করুন
             filtered_df = self.df_cache[self.df_cache[symbol_col] == symbol.upper()]
-            
+
             if filtered_df.empty:
                 logger.info(f"{symbol} এর জন্য কোন ডাটা পাওয়া যায়নি")
                 return None, 0
-            
+
             total_rows = len(filtered_df)
             logger.info(f"{symbol} এর জন্য মোট {total_rows}টি রো পাওয়া গেছে")
-            
+
             # ডেট কলাম অনুযায়ী সাজান
             date_col = self._find_date_column(filtered_df)
             if date_col:
@@ -210,7 +210,7 @@ class StockDataFetcher:
                 latest_df = latest_df.sort_values(date_col, ascending=True)
             else:
                 latest_df = filtered_df.tail(rows).copy()
-            
+
             logger.info(f"{symbol} এর জন্য {len(latest_df)}টি সর্বশেষ রো নেওয়া হয়েছে")
             return latest_df, total_rows
 
@@ -222,34 +222,34 @@ class StockDataFetcher:
         """সম্পূর্ণ ডাটা + প্রম্পট সহ ফাইল তৈরি করুন"""
         if df is None or df.empty:
             return None
-        
+
         timestamp = datetime.now().strftime("%Y-%m-%d %I:%M:%S %p")
-        
+
         # সম্পূর্ণ ডাটা টেক্সট ফরম্যাটে কনভার্ট করুন
         df_clean = df.copy()
         df_clean = df_clean.fillna('')
-        
+
         # ডাটা স্ট্রিং তৈরি করুন
         data_string = df_clean.to_string()
         logger.info(f"ডাটা স্ট্রিং তৈরি করা হয়েছে: {len(data_string)} অক্ষর")
-        
+
         columns_list = list(df.columns)
-        
+
         price_col = None
         for col in ['close', 'Close', 'price', 'Price', 'last', 'Last']:
             if col in df.columns:
                 price_col = col
                 break
-        
+
         current_price = df[price_col].iloc[-1] if price_col and len(df) > 0 else 'N/A'
         date_col = self._find_date_column(df)
-        
+
         time_period = ""
         if date_col and date_col in df.columns:
             start_date = df[date_col].min()
             end_date = df[date_col].max()
             time_period = f"📅 সময়কাল: {start_date} থেকে {end_date}"
-        
+
         # সম্পূর্ণ ফাইল কন্টেন্ট তৈরি করুন
         file_content = f"""🤖 **ভূমিকা:** আপনি একজন বিশ্বসেরা প্রফেশনাল টেকনিক্যাল অ্যানালিস্ট, চার্ট রিডার এবং ট্রেডার। আপনার কাজ হলো প্রদত্ত OHLCV ডাটা, প্রাইস মুভমেন্ট এবং মার্কেট স্ট্রাকচার বিশ্লেষণ করে একটি পূর্ণাঙ্গ, প্রমাণভিত্তিক এবং অ্যাকশনেবল টেকনিক্যাল রিপোর্ট তৈরি করা। আপনার প্রতিটি মন্তব্য যুক্তিসঙ্গত, ডাটা-ড্রিভেন এবং প্যাটার্ন-ভিত্তিক হতে হবে।
 
@@ -432,7 +432,7 @@ class StockDataFetcher:
 
 【ভলিউম প্যাটার্নস】
   → ভলিউম স্পাইক: অস্বাভাবিক হাই ভলিউম
-  → ভলিউম ডাইভারজেন্স: প্রাইস হাইয়ার হাই কিন্তু ভলিউম লোয়ার
+  → ভলিউম ডাইভারজেন্স: প্রাইস হায়ার হাই কিন্তু ভলিউম লোয়ার
   → ভলিউম কনফার্মেশন: ব্রেকআউটের সাথে হাই ভলিউম
 
 【RSI ডাইভারজেন্স】
@@ -556,15 +556,15 @@ class StockDataFetcher:
 • [সতর্কতা ১]
 • [সতর্কতা ২]
 
-💡 **নোট:** এই বিশ্লেষণ সম্পূর্ণ টেকনিক্যাল ডাটার উপর ভিত্তি করে। সবসময় নিজস্ব রিসার্চ এবং রিস্ক ম্যানেজমেন্ট প্রয়োগ করুন。
+💡 **নোট:** এই বিশ্লেষণ সম্পূর্ণ টেকনিক্যাল ডাটার উপর ভিত্তি করে। সবসময় নিজস্ব রিসার্চ এবং রিস্ক ম্যানেজমেন্ট প্রয়োগ করুন।
 
 ═══════════════════════════════════════════════════════════
 
 ⚠️ **আবারও মনে রাখবেন: আপনার সম্পূর্ণ উত্তর বাংলা ভাষায় দিন! ইমোজি ব্যবহার করুন!**
 """
-        
+
         logger.info(f"ফাইল তৈরি করা হয়েছে: {len(data_string)} অক্ষরের ডাটা সহ")
-        
+
         return file_content
 
 # ================================
@@ -597,6 +597,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 /help - সাহায্য দেখুন
 /about - বট সম্পর্কে জানুন
 /symbols - উপলব্ধ সিম্বল দেখুন
+/comment - comment.txt ফাইল ডাউনলোড করুন
 
 এখন আপনার পছন্দের স্টক সিম্বল পাঠান!
 """
@@ -650,6 +651,7 @@ AI কে বলুন: "এই ডাটা এবং প্রম্পট অ
 /help - সাহায্য
 /about - তথ্য
 /symbols - সিম্বল লিস্ট
+/comment - comment.txt ফাইল ডাউনলোড
 """
     await update.message.reply_text(text, parse_mode='Markdown')
 
@@ -685,242 +687,40 @@ Render.com
 """
     await update.message.reply_text(text, parse_mode='Markdown')
 
-async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    symbol = update.message.text.strip().upper()
+async def comment_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /comment command - create comment.txt file with headers"""
     user_id = update.effective_user.id
-
-    now = asyncio.get_event_loop().time()
-    if user_id in user_last and now - user_last[user_id] < 5:
-        await update.message.reply_text("⏳ একটু অপেক্ষা করুন...")
-        return
-    user_last[user_id] = now
-
-    # প্রথমে সিম্বল লিস্ট লোড করুন
-    if not fetcher.all_symbols:
-        await fetcher.load_all_symbols()
-
-    similar = fetcher.find_similar_symbols(symbol)
-
-    if similar and similar[0] != symbol:
-        keyboard = []
-        for s in similar[:10]:
-            keyboard.append([InlineKeyboardButton(s, callback_data=f"select_{s}")])
-        keyboard.append([InlineKeyboardButton("❌ বাতিল", callback_data="cancel")])
-
-        reply_markup = InlineKeyboardMarkup(keyboard)
-
-        await update.message.reply_text(
-            f"🔍 **'{symbol}'** সিম্বলটি পাওয়া যায়নি।\n\n"
-            f"আপনি কি এইগুলোর মধ্যে একটি বোঝাতে চেয়েছেন?\n\n"
-            f"💡 সম্পূর্ণ লিস্ট দেখতে /symbols ব্যবহার করুন।",
-            reply_markup=reply_markup,
-            parse_mode='Markdown'
-        )
-        return
-
-    await process_symbol(update, symbol)
-
-async def process_symbol(update: Update, symbol: str, is_callback=False):
-    if is_callback:
-        query = update.callback_query
-        await query.answer()
-        msg = await query.edit_message_text(
-            f"🔍 **{symbol}** ডাটা সংগ্রহ করা হচ্ছে...\n\n⏳ ১০-২০ সেকেন্ড সময় লাগতে পারে...",
-            parse_mode='Markdown'
-        )
-        user_id = query.from_user.id
-    else:
-        msg = await update.message.reply_text(
-            f"🔍 **{symbol}** ডাটা সংগ্রহ করা হচ্ছে...\n\n⏳ ১০-২০ সেকেন্ড সময় লাগতে পারে...",
-            parse_mode='Markdown'
-        )
-        user_id = update.effective_user.id
-
+    
+    msg = await update.message.reply_text(
+        "📊 **comment.txt ফাইল তৈরি করা হচ্ছে...**\n\n"
+        "⏳ একটু অপেক্ষা করুন...",
+        parse_mode='Markdown'
+    )
+    
     try:
-        df, total_rows = await fetcher.get_stock_data(symbol, rows=400)
-
-        if df is None or df.empty:
-            await msg.edit_text(
-                f"❌ **{symbol}** সিম্বলের জন্য কোন ডাটা পাওয়া যায়নি!\n\n"
-                "📋 সম্পূর্ণ সিম্বল লিস্ট দেখতে /symbols কমান্ড ব্যবহার করুন।",
-                parse_mode='Markdown'
-            )
-            return
-
-        await msg.edit_text(
-            f"📊 **{symbol}**\n\n"
-            f"✅ ডাটা সংগ্রহ সম্পূর্ণ!\n"
-            f"📈 মোট রো: {total_rows}টি\n"
-            f"📋 ব্যবহৃত: {len(df)}টি সর্বশেষ রো\n"
-            f"📝 ফাইল তৈরি হচ্ছে...",
-            parse_mode='Markdown'
-        )
-
-        file_content = fetcher.create_full_file(symbol, df, total_rows)
-
-        if not file_content:
-            await msg.edit_text(f"❌ **{symbol}** ফাইল তৈরি করতে সমস্যা!", parse_mode='Markdown')
-            return
-
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"{symbol}_analysis_{timestamp}.txt"
-
-        file_id = f"{user_id}_{symbol}_{timestamp}"
+        # Exact content as requested
+        file_content = '''symbol,এলিয়ট ওয়েব,sub-ওয়েব,এন্ট্রি জোন (টাকা),স্টপ লস (টাকা),টেক প্রফিট ১ (টাকা),টেক প্রফিট ২ (টাকা),টেক প্রফিট ৩ (টাকা),RRR,স্কোর (%),কুইক ইনসাইট
+কলামগুলো থাকবে csv ফাইলে'''
+        
+        # Create file ID for download (always named comment.txt)
+        filename = "comment.txt"
+        file_id = f"comments_{user_id}_{datetime.now().timestamp()}"
+        
         generated_files[file_id] = {
             'content': file_content,
             'filename': filename,
-            'symbol': symbol
+            'symbol': 'comments'
         }
-
+        
         if RENDER_URL:
             download_url = f"{RENDER_URL}/download/{file_id}"
         else:
             download_url = f"http://localhost:10000/download/{file_id}"
+        
+        # Simple response with download link
+        response = f"""✅ **comment.txt ফাইল তৈরি সম্পূর্ণ!**
 
-        price_col = None
-        for col in ['close', 'Close', 'price', 'Price', 'last', 'Last']:
-            if col in df.columns:
-                price_col = col
-                break
-
-        current_price = df[price_col].iloc[-1] if price_col and len(df) > 0 else 'N/A'
-
-        response = f"""✅ **{symbol}** ফাইল তৈরি সম্পূর্ণ!
-
-📊 **ডাটা সারাংশ:**
-• সিম্বল: {symbol}
-• বর্তমান মূল্য: {current_price}
-• মোট রেকর্ড: {len(df)}টি সর্বশেষ ডাটা
-• কলাম সংখ্যা: {len(df.columns)}টি
-• তৈরি করা হয়েছে: {datetime.now().strftime('%d %B, %Y - %I:%M %p')}
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 📥 **ডাউনলোড লিংক:**
-[📄 {symbol}_analysis.txt]({download_url})
+[📄 comment.txt]({download_url})
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🤖 **AI টুলে ব্যবহার করুন:**
-
-ফাইলটি আপনার পছন্দের AI টুলে আপলোড করে বলুন:
-
-**"এই ডাটা এবং প্রম্পট অনুযায়ী সম্পূর্ণ টেকনিক্যাল অ্যানালাইসিস করুন। উত্তর বাংলা ভাষায় দিন।"**
-
-• [✨ Gemini AI](https://gemini.google.com)
-• [⚡ Groq](https://groq.com)
-• [💬 ChatGPT](https://chat.openai.com)
-• [🧠 Claude](https://claude.ai)
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📄 **ফাইলে যা থাকছে (সম্পূর্ণ):**
-✅ সম্পূর্ণ ডাটা ({len(df)}টি রো, {len(df.columns)}টি কলাম)
-✅ এলিয়ট ওয়েভ সম্পূর্ণ লাইব্রেরি
-✅ SMC সম্পূর্ণ লাইব্রেরি
-✅ প্রাইস অ্যাকশন সম্পূর্ণ লাইব্রেরি
-✅ চার্ট প্যাটার্ন সম্পূর্ণ লাইব্রেরি
-✅ ফিবোনাচ্চি অ্যানালাইসিস
-✅ RSI/MACD/OBV ডাইভারজেন্স সম্পূর্ণ লাইব্রেরি
-✅ ট্রেডিং প্ল্যান টেমপ্লেট
-✅ রিস্ক ম্যানেজমেন্ট ফ্রেমওয়ার্ক
-✅ **বাংলায় উত্তর দেওয়ার নির্দেশনা**
-
-⏰ লিংক ৩০ মিনিটের জন্য সক্রিয় থাকবে।
-"""
-
-        await msg.edit_text(response, parse_mode='Markdown', disable_web_page_preview=False)
-
-        async def delete_file():
-            await asyncio.sleep(1800)
-            if file_id in generated_files:
-                del generated_files[file_id]
-
-        asyncio.create_task(delete_file())
-
-    except Exception as e:
-        logger.error(f"ত্রুটি: {traceback.format_exc()}")
-        await msg.edit_text(
-            f"❌ **{symbol}** প্রক্রিয়াকরণে সমস্যা!\n\nত্রুটি: {str(e)[:200]}",
-            parse_mode='Markdown'
-        )
-
-async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    data = query.data
-
-    if data == "cancel":
-        await query.answer()
-        await query.edit_message_text("❌ বাতিল করা হয়েছে।")
-        return
-
-    if data.startswith("select_"):
-        symbol = data.replace("select_", "")
-        await process_symbol(update, symbol, is_callback=True)
-
-@flask_app.route('/download/<file_id>')
-def download_file(file_id):
-    if file_id not in generated_files:
-        return jsonify({'error': 'ফাইল পাওয়া যায়নি বা মেয়াদ উত্তীর্ণ হয়েছে'}), 404
-
-    file_data = generated_files[file_id]
-    content = file_data['content']
-    filename = file_data['filename']
-
-    file_stream = io.BytesIO(content.encode('utf-8-sig'))
-    file_stream.seek(0)
-
-    return send_file(
-        file_stream,
-        as_attachment=True,
-        download_name=filename,
-        mimetype='text/plain; charset=utf-8'
-    )
-
-bot_application.add_handler(CommandHandler("start", start))
-bot_application.add_handler(CommandHandler("help", help_command))
-bot_application.add_handler(CommandHandler("about", about_command))
-bot_application.add_handler(CommandHandler("symbols", symbols_command))
-bot_application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
-bot_application.add_handler(CallbackQueryHandler(handle_callback))
-
-# ================================
-# মেইন
-# ================================
-async def setup_webhook():
-    if RENDER_URL:
-        webhook_url = f"{RENDER_URL}/webhook"
-        try:
-            await bot_application.bot.set_webhook(webhook_url)
-            logger.info(f"✅ ওয়েবহুক সেট করা হয়েছে: {webhook_url}")
-        except Exception as e:
-            logger.error(f"ওয়েবহুক সেট করতে ব্যর্থ: {e}")
-
-async def main():
-    logger.info("🚀 স্টক টেকনিক্যাল অ্যানালাইসিস বট চালু হচ্ছে...")
-
-    flask_thread = threading.Thread(target=run_flask, daemon=True)
-    flask_thread.start()
-
-    if not TELEGRAM_BOT_TOKEN:
-        logger.error("❌ TELEGRAM_BOT_TOKEN সেট করা নেই!")
-    if not HF_TOKEN:
-        logger.warning("⚠️ HF_TOKEN সেট করা নেই!")
-
-    if RENDER_URL:
-        await setup_webhook()
-        await bot_application.initialize()
-        await bot_application.start()
-        logger.info("✅ বট ওয়েবহুক মোডে চালু আছে")
-        while True:
-            await asyncio.sleep(1)
-    else:
-        await bot_application.initialize()
-        await bot_application.start()
-        await bot_application.updater.start_polling()
-        logger.info("✅ বট পোলিং মোডে চালু আছে")
-        while True:
-            await asyncio.sleep(1)
-
-if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        logger.info("🛑 বট বন্ধ করা হয়েছে")
+📄 **ফাইলের কন্টেন্ট:**
